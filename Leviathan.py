@@ -16,7 +16,11 @@ WHAT THE PLATFORM IS
                nursery grounds through eight release chutes.
   3. HARVESTER The same hull trawls its own DNA-barcoded stock back at 300 g,
                freezes and packs it onboard, and offloads at port.
-  4. STORM-PROOF BY SHAPE, NOT BY STRENGTH.  Five slender pontoons carry twenty
+  4. FARMER    The stern carries the DRONE SHRIMP-HERDING spread: a multi-thread
+               reel drops AI "fish dog" water drones through PTFE drop chutes;
+               they swim a moving fence of sound, light, bubbles and e-fields
+               that walks the school into the smart trawl net.
+  5. STORM-PROOF BY SHAPE, NOT BY STRENGTH.  Five slender pontoons carry twenty
                slender columns through the free surface.  Only the columns cut
                the waterline, so the waterplane is ~12% of an equivalent
                monohull.  That pushes heave and roll natural periods far above
@@ -41,14 +45,15 @@ FILE MAP
   SECTION  5  Business plan data (company, EEZ, quota, plants, donation, P&L)
   SECTION  6  Colours
   SECTION  7  Mini 3D engine
-  SECTION  8  Geometry builders (vessel, engine, hatchery)
+  SECTION  8  Geometry builders (vessel, engine, hatchery, farm)
+  SECTION  8B Manufacturing / blueprint spec blocks (MFG_SPEC, process routes)
   SECTION  9  Marine physics: power, propulsion, energy harvest
   SECTION 10  Marine powertrain + hatchery simulation
   SECTION 11  Voyage world
   SECTION 12  Informational text
   SECTION 13  HUD / UI helpers
   SECTION 14  3D renderer
-  SECTION 15  Application (9 tabs)
+  SECTION 15  Application (12 tabs)
   SECTION 15B 20-year fleet simulation engine
   SECTION 16  Console reports + entry point
 
@@ -60,7 +65,8 @@ Run:           python Leviathan.py            interactive digital twin
 ================================================================================
 """
 
-import math, os, sys, warnings, random
+import math, os, sys, warnings, random, re
+from operator import itemgetter
 warnings.filterwarnings("ignore")
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 import numpy as np
@@ -104,6 +110,19 @@ DIMS = {
     "torque_shaft_len_m":0.32,"boiler_d_m":0.38,"boiler_len_m":0.85,"steam_stage_d_m":0.14,
     "steam_gen_d_m":0.24,"heat_shield_span_m":2.2,"heat_shield_vanes":7,"thermal_bank_d_m":0.75,
     "thermal_bank_len_m":1.30,
+    # --- V1.17 engine refinements (SE.py base design, scaled to this block) --
+    # compression-GATE sealed shoe squeezes the charge ahead of the injector;
+    # INTEGRAL multi-plate wet clutch; COOLING-RING heat-trap jacket feeding the
+    # ORC boiler; 2nd-STAGE exhaust recovery turbine; clutch HYDRAULIC pack;
+    # TEG heat-film bank as a second heat-recovery path.
+    "trans_inner_d_m":0.56,"gate_clearance_m":0.004,"gate_thick_m":0.12,"gate_span_deg":42.0,
+    "coolring_gap_m":0.028,"coolring_thick_m":0.08,"coolring_fingers":12,
+    "recov2_turbine_d_m":0.28,"recov2_gen_d_m":0.25,
+    "clutch_n_plates":9,"clutch_gap_m":0.012,
+    "hyd_pump_d_m":0.28,"hyd_pump_len_m":0.32,"hyd_acc_d_m":0.20,"hyd_acc_len_m":0.40,
+    "hyd_rsv_w_m":0.24,
+    "teg_panels":6,"teg_panel_w_m":0.30,"teg_panel_t_m":0.03,
+    "out_angle_deg":14.0,"dcbus_cable_d_m":0.28,"dcbus_trunk_w_m":1.00,
     "pods":4,"pod_pod_d_m":3.0,"pod_pod_len_m":7.0,"prop_d_m":6.5,"prop_blades":5,"rail_poles":128,
     "heave_fins":24,"heave_fin_span_m":4.5,"heave_fin_chord_m":3.5,"heave_fin_area_m2":14.0,
     "sail_masts":0,"sail_height_m":40.0,"sail_width_m":20.0,"sail_area_m2":900.0,
@@ -424,7 +443,7 @@ SHIP["wetted_area_m2"]=(HULL_FORM["pontoons"]*math.pi*HULL_FORM["pontoon_d_m"]
                         *math.pi*HULL_FORM["column_d_m"]
                         *column_immersion_m(LOAD_CONDITIONS["OPERATE"]["draft_m"]))
 
-SHIP_DISP = 1.0/100.0; ENG_DISP = 1.0/2.0; HATCH_DISP = 1.0/8.0
+SHIP_DISP = 1.0/100.0; ENG_DISP = 1.0/2.0; HATCH_DISP = 1.0/8.0; FARM_DISP = 1.0/5.0
 def scs(m): return m*SHIP_DISP
 H2_LHV_KWH_KG=33.33; H2_ENGINE_EFF=0.60; ELECTROLYSIS_KWH_KG=DIMS["electro_kwh_per_kg"]
 SOLAR_IRRADIANCE_W=1000.0; KN_TO_MS=0.514444
@@ -639,8 +658,8 @@ HABITAT={
 # ============================================================================
 # SECTION 3 -- INNOVATION UPGRADES (energy, feed, recapture, autonomy)
 # ============================================================================
-# Sixteen numbered entries; #7 (kite sails) is retained as a rejected option so
-# the reasoning survives, which is why the working count is fifteen.
+# Seventeen numbered entries; #7 (kite sails) is retained as a rejected option so
+# the reasoning survives, which is why the working count is sixteen.
 
 # 1. OTEC (Ocean Thermal Energy Conversion) — 24/7 baseload power from temp gradient
 # Uses 30m draft to access cold deep water vs warm surface. Continuous, day or night.
@@ -767,6 +786,299 @@ BIOFLOC={"enabled":True,"replacement_pct":50.0,
          "ai_optimized":True,"density_management":"AI controls C:N ratio",
          "note":"Biofloc = 50% feed replacement. Bacteria eat shrimp waste, make protein flocs shrimp re-eat."}
 
+# 17. Drone shrimp herding — the "fish dog" spread (FARM tab)
+# A multi-thread powered reel on the stern drops mini water drones through PTFE
+# drop chutes.  The drones swim a MOVING FENCE of low-frequency sound, LED
+# light, bubble curtain and a weak electric field, converging the school into
+# the smart trawl net.  Shrimp startle away from the drones and toward the net;
+# the drones never touch them.  Concept proven from fish-herding ROV research;
+# shrimp respond to 20-100 Hz near-field sound + shadow/light cues.
+HERDING={
+    # -- the multi-thread reel + drop machinery (the "drop design") ------------
+    "reel_drums":6,               # powered drums across the gantry beam
+    "lines_per_drum":8,           # umbilical grooves per drum
+    "tethered_drones":48,         # drum x lines = tethered "fish dog" drones
+    "free_auvs":AUV_FLEET["count"],  # + untethered survey AUV scouts
+    "drop_chutes":4,              # PTFE-lined gravity launch chutes
+    "chute_angle_deg":40.0,       # chute tilt off vertical -- soft entry
+    "chute_drop_s":1.8,           # seconds, carousel slot -> splash-damped exit
+    "splash_damp":"flared exit cone + air-bleed ring, <0.3 m splash",
+    "magazine_drones":64,         # rotary magazine: charged + racked spares
+    "magazine_slots":16,          # visible rack slots on the carousel rim
+    "drop_per_min":12.0,          # launch rate (gravity drop, no crane)
+    "recover_per_min":15.0,       # surface-skimming recovery cradle
+    "charge_min":45.0,            # inductive charge pad turnaround
+    "rinse":"freshwater desalination rinse kills biofilm on the rack",
+    "dead_drone":"umbilical winch-in -- no swimmer ever needed",
+    # -- the drone itself ------------------------------------------------------
+    "drone_len_m":0.9,            # mini ROV, ~3 ft torpedo
+    "drone_dia_m":0.28,"drone_mass_kg":14.0,
+    "drone_speed_kn":4.0,"drone_endurance_h":12.0,"drone_depth_m":120.0,
+    "thrusters_per_drone":3,"thruster_d_m":0.09,
+    "sonar_range_m":80.0,"comms":"umbilical fibre + acoustic backup",
+    "tether_len_m":280.0,         # Dyneema umbilical per line -- reel capacity;
+                                # must reach the outermost fence slot abeam
+                                # (derived check in SECTION 3, herd_tether_len_m)
+    # -- the sensory AI (goal doc: "each line drone has sensory AI herding" ----
+    #    "learning") -- every drone reads the school and the swarm relearns
+    #    the herding policy every set.
+    "sensor_suite":"imaging sonar + stereo cam + eDNA + DVL + CTD + hydrophone",
+    "ai_module":"onboard 22 TOPS edge module per drone",
+    "ai_model":"RL swarm herding policy, retrained fleet-wide every set",
+    "herd_learning":True,         # each trip refines the policy (goal doc)
+    "target_tracking_hz":10.0,    # school re-acquire rate
+    "adapt":"stimulus amplitude auto-tuned to school density + mood",
+    # -- the herding stimuli (what makes it a "fish dog") ----------------------
+    "acoustic_lo_hz":20.0,"acoustic_hi_hz":100.0,   # near-field pressure wave
+    "led_nm":470.0,               # blue LED bar -- shadow/light cue
+    "bubble_curtain":True,        # rising micro-bubble wall between drones
+    "efield_v_per_m":0.5,         # weak pulsed field -- startle, not stun
+    # -- geometry + performance ------------------------------------------------
+    "spread_m":400.0,             # total fence width the 48 drones hold
+    "net_mouth_m":16.0,           # trawl mouth the fence converges onto
+    "sweep_speed_kn":2.5,         # herding advance speed
+    "herd_eff_pct":95.0,          # of school delivered to net mouth
+    "concentration_x":5.0,        # catch density vs unassisted trawl
+    "baseline_catch_t_per_set":8.0,
+    "catch_t_per_set":40.0,       # 5x concentration -> 40 t per 4 h set
+    "set_hours":4.0,              # one full drop->recover cycle
+    "sets_per_day":6,"fishing_days_per_year":240,
+    "bycatch_reduction_pct":80.0, # TED + BRD + targeted adults only
+    "deploy_time_min":25.0,"recover_time_min":20.0,
+    "corridors":["wall","funnel","arc","sweep"],  # AI formation library
+    "corridor_desc":{
+        "wall":"line abreast -- pushes the school straight ahead",
+        "funnel":"V-shape converging on the net mouth",
+        "arc":"semi-circle closes behind the school, then walks it",
+        "sweep":"rotating line sweeps the bottom up-drift"},
+    # -- electrical load of the whole spread while a set runs (feeds the
+    #    powertrain's flow ledger -- it is all surplus solar anyway) ----------
+    "reel_servo_kw":90.0,"charge_ring_kw":240.0,"bubble_compressor_kw":180.0,
+    "stimulus_kw_per_drone":0.9,"control_kw":60.0,"survey_kw":120.0,
+    # -- release-season role (goal doc: drone swarms disperse juveniles with
+    #    nutrient boosters that triple local carrying capacity) ---------------
+    "release_drones":True,        # same drones seed + mark the nursery zone
+    "nutrient_boosters":True,"booster_t_per_zone":6.0,
+    "carrying_cap_boost_x":3.0,   # booster -> local carrying capacity x3
+    "herd_gain_pct":400.0,        # 2-5x yield per unit effort (goal doc)
+    # -- detection + AI targeting (goal doc: echo sounders + omnidirectional
+    #    sonar to ~1,600 ft, satellite hotspot forecast ~85% accuracy) --------
+    "detect_depth_m":490.0,       # ~1,600 ft omni sonar detection
+    "hotspot_pred_pct":85.0,      # satellite+AI biomass forecast accuracy
+    "trawl_time_cut_pct":50.0,    # concentrated school -> half the tow time
+    "note":"48 tethered drones + 8 free AUVs swim a moving stimulus fence. "
+           "Concentrates the school 5x into a TED/BRD smart net -- cleaner, "
+           "faster, adults-only capture. Umbilicals supply power + fibre comms."}
+
+# The herding set cycle: the stage ribbon on the FARM tab and the drone
+# animation both follow this table.  (stage, colour-key, dwell seconds)
+FARM_STAGES=[
+    ("DEPLOY","gantry",3.0),   # carousel indexes, chutes armed, reel pays out
+    ("DROP","chute",4.0),      # drones slide the PTFE chutes, splash-damped
+    ("DIVE","drone",4.0),      # powered descent to fence depth
+    ("SWEEP","bubble",6.0),    # fence forms, bubble curtain inflates
+    ("FENCE","ping",6.0),      # stimuli on, school engaged and held
+    ("FUNNEL","school",5.0),   # V closes onto the mouth, school compacts 5x
+    ("CATCH","cod",3.0),       # sonar trips at 40 t, cod end lifts
+    ("RECOVER","mag",4.0),     # cradle scoops drones, rinse + inductive charge
+]
+
+# Drone-fence formation library (the "corridors" the AI picks per school
+# shape).  herd_fence_slot() maps a unit position along the formation to a
+# real-metres fence slot: x+ downstream toward the net (~+26 m), z is beam,
+# y<0 underwater.
+FARM_PATTERNS={
+    "wall":  {"label":"WALL","desc":HERDING["corridor_desc"]["wall"]},
+    "funnel":{"label":"FUNNEL","desc":HERDING["corridor_desc"]["funnel"]},
+    "arc":   {"label":"ARC","desc":HERDING["corridor_desc"]["arc"]},
+    "sweep": {"label":"SWEEP","desc":HERDING["corridor_desc"]["sweep"]},
+}
+def herd_fence_slot(pattern,i,n):
+    """Real-metres (x,y,z) fence slot + heading for drone i of n in a pattern.
+
+    Coordinates are in the farm scene frame (stern -x, net +x, surface y=0,
+    beam z), matching build_farm_parts().  The beam extent scales with the
+    live HERDING['spread_m'] so the TESTBENCH slider really moves the fence."""
+    a=i/max(1,n-1)
+    zs=HERDING["spread_m"]/400.0                # formation width scale
+    if pattern=="wall":
+        # straight abreast line across the school, advancing with it
+        return (-4.0+24.0*a, -8.0-2.0*math.sin(math.pi*a),
+                (-18.0+36.0*a)*zs, math.pi/2.0)
+    if pattern=="arc":
+        # half-circle closing behind the school, horns aimed at the mouth
+        th=math.pi*(0.08+0.84*a)               # sweep of the arc
+        R=20.0
+        x=-4.0+R*math.cos(th)*0.6+14.0*a
+        z=-R*math.sin(th)*0.9*zs
+        heading=math.pi/2.0-math.copysign(0.42*(1.0-a),z if abs(z)>1e-6 else 1.0)
+        return (x,-8.0-2.5*math.sin(th),z,heading)
+    if pattern=="sweep":
+        # diagonal rotating line -- stern side back, net side forward
+        return (-10.0+30.0*a, -8.5-2.0*math.sin(math.pi*a),
+                (-20.0+28.0*a)*zs, math.pi/2.0-0.30)
+    # "funnel" (default): V converging on the mouth -- the classic corridor
+    x=-4.0+24.0*a
+    z=(-17.0+34.0*a)*(1.0-0.55*a)*zs
+    y=-7.0-4.0*math.sin(math.pi*a)
+    side=-1.0 if z<0 else 1.0
+    heading=math.pi/2.0-side*0.28*(1.0-a)
+    return (x,y,z,heading)
+
+# The smart trawl the drones feed into.  A real net, not a magic one.
+HERD_NET={"type":"four-panel otter trawl, AI-variable mesh",
+    "mouth_w_m":16.0,"mouth_h_m":10.0,"net_len_m":38.0,"cod_end_t":40.0,
+    "panels":4,"mesh_mm":28.0,"mesh_min_mm":22.0,"mesh_max_mm":40.0,   # AI-set, adults only
+    "ted":True,"brd":True,             # turtle + bycatch excluders
+    "ted_angle_deg":55.0,"brd_escape_windows":2,
+    "footrope":"rockhopper, benthic-safe",
+    "headrope_sonar":True,             # omnidirectional shrimp-count sonar
+    "sensors":"headrope sonar + cod-end camera + live catch estimate",
+    "otter_boards":2,"board_area_m2":14.0,
+    "trawl_speed_kn":2.5,"trawl_depth_m":45.0,"lift_time_min":12.0,
+    "tension_sensors":True,       # auto-tunes mesh under load (goal doc)
+    "groove_excluder":"escape grooves pass fish >25 mm (90% shrimp purity)",
+    "shrimp_purity_pct":90.0,
+    "note":"Mesh auto-sizes 22-40 mm to released-size class. TED/BRD keep "
+           "turtles + finfish out. Headrope sonar closes the set when the "
+           "cod-end estimate hits 40 t."}
+
+# The yearly ocean-ranching cycle the whole FARM tab is about: seed the zone,
+# grow it wild, herd it back.  Zones rotate so each gets rest years.
+FARM_CYCLE={"zones":3,"zone_len_km":80.0,"zone_width_km":20.0,
+    "phases":[("RELEASE","spring","drone-assisted PL20/juvenile release + nutrient boosters",45),
+              ("GROW","summer","AUV survey grid, eDNA census, enrichment drift",90),
+              ("HERD+HARVEST","autumn","drone fence -> smart trawl, adults only",60),
+              ("REST+ROTATE","winter","zone rests, fleet rotates to next zone",170)],
+    "rest_years_per_zone":2,          # each zone falls fallow between passes
+    "restock_t_per_zone":20.0,        # tonnes of PL stocked per zone pass
+    "sustainable_take_frac":0.25,     # of standing biomass per pass
+    "biomass_gain_x":30.0,            # stocked -> standing biomass multiplier
+    "monitoring":"AUV survey grid + eDNA samplers + satellite ocean colour",
+    "note":"3+ rotating ranching zones (~80 km each) on the nursery grounds. "
+           "Enhance, monitor, herd-harvest, rest -- never mined out."}
+
+# RELEASE DESIGN (goal doc): deploy larger hatchlings near the seasonal
+# nursery areas -- survival, not fecundity, is the lever that matters. Two
+# release classes share the same chutes: mass PL20 straight into the zone
+# interior, and 7.5 g juveniles seeded at the sheltered nursery edge where
+# drones then disperse them with nutrient boosters.
+RELEASE={"classes":[
+            ("PL20 mass release",0.02,
+             RECAPTURE["pl_to_harvest_survival"],"zone interior, tide-driven dispersal"),
+            ("Juvenile edge seeding",7.5,
+             RECAPTURE["juvenile_to_harvest_survival"],"sheltered nursery edge + booster ring")],
+        "window":"spring tide + rainy-season dispersal, dusk release",
+        "nursery_water":"flow-through ambient seawater + RAS polish, zero acclimation shock",
+        "brine":"28-30 C, 30-35 ppt biofloc RAS (supplier PL finish onboard)",
+        "supplier_t_per_trip":20.0,   # goal doc: supplier tops up >=20 t
+        "penaeid_benchmark":"wild releases: 3-10% typical, 22% best sites",
+        "chutes":"%d DNA-barcoded release chutes, %.1f m bore"%(DIMS["release_chutes"],DIMS["release_chute_d_m"]),
+        "mark":"every batch DNA-barcoded at the chute -> recapture audit trail",
+        "note":"A 7.5 g juvenile survives ~%d%% to harvest vs ~%.1f%% for a PL20 "
+               "-- releasing bigger costs nursery volume, buys survival."%(
+                   RECAPTURE["juvenile_to_harvest_survival"]*100,
+                   RECAPTURE["pl_to_harvest_survival"]*100)}
+
+# COMPLIANCE (goal doc): NOAA / RFMO rules, bycatch excluders, licensed stock
+# enhancement, and the DNA audit trail that makes recapture provable.
+FARM_COMPLIANCE=[
+    "NOAA / RFMO effort + quota reporting, observer-grade eDNA + sonar log",
+    "TED 55deg + BRD double escape window -- %.0f%% bycatch cut"%HERDING["bycatch_reduction_pct"],
+    "Licensed stock enhancement only inside owned ranching zones",
+    "Every released batch DNA-barcoded -> recapture share is audited, not claimed",
+    "Zone rotation: %d rest years per zone, %.0f%% standing-biomass cap per pass"%(
+        FARM_CYCLE["rest_years_per_zone"],FARM_CYCLE["sustainable_take_frac"]*100)]
+
+def herd_drones_total(): return HERDING["tethered_drones"]+HERDING["free_auvs"]
+def herd_deploy_min(): return HERDING["tethered_drones"]/HERDING["drop_per_min"]
+def herd_recover_min(): return HERDING["tethered_drones"]/HERDING["recover_per_min"]
+def herd_catch_t_per_day(): return HERDING["catch_t_per_set"]*HERDING["sets_per_day"]
+def herd_catch_t_per_year(): return herd_catch_t_per_day()*HERDING["fishing_days_per_year"]
+def herd_baseline_catch_t_per_year():
+    return HERDING["baseline_catch_t_per_set"]*HERDING["sets_per_day"]*HERDING["fishing_days_per_year"]
+def herd_sweep_area_ha_per_h():
+    """Fence width x advance speed, in hectares swept per hour."""
+    return HERDING["spread_m"]*HERDING["sweep_speed_kn"]*1852.0/10000.0
+def herd_funnel_ratio(): return HERDING["spread_m"]/HERDING["net_mouth_m"]
+def herd_own_share_of_recapture():
+    """How much of the vessel's own recapture the onboard trawl lands --
+    the partner + AI trawler fleet lands the rest."""
+    return min(1.0,herd_catch_t_per_year()/max(1.0,harvest_t_per_vessel_per_year()))
+def herd_zone_area_km2(): return FARM_CYCLE["zone_len_km"]*FARM_CYCLE["zone_width_km"]
+def herd_fence_spacing_m(): return HERDING["spread_m"]/HERDING["tethered_drones"]
+def herd_power_kw():
+    """Full electrical draw of the herding spread while a set runs --
+    reel servos + charge ring + bubble compressor + per-drone stimuli +
+    the command container.  Fed to the powertrain flow ledger as 'farm'."""
+    return (HERDING["reel_servo_kw"]+HERDING["charge_ring_kw"]
+            +HERDING["bubble_compressor_kw"]
+            +HERDING["stimulus_kw_per_drone"]*HERDING["tethered_drones"]
+            +HERDING["control_kw"])
+def herd_survey_power_kw():
+    """Light farm load in DRIFT mode: AUV scouts + eDNA + comms relay."""
+    return HERDING["survey_kw"]
+def herd_release_boost_t_per_year():
+    """Nutrient-booster tonnes deployed across all zones per year."""
+    return HERDING["booster_t_per_zone"]*FARM_CYCLE["zones"]
+def herd_energy_kwh_per_set():
+    """kWh a full 4 h drop->recover set consumes (all surplus solar)."""
+    return herd_power_kw()*HERDING["set_hours"]
+
+# ---- Herding physics, derived not asserted -----------------------------------
+# HERDING["herd_eff_pct"] is the design target.  What the fence really delivers
+# is the product of the per-stage retention fractions below: every stage hands
+# the school to the next with a few percent leaking, and the chain is honest
+# about it.  Detection and cod-end capture sit OUTSIDE the delivery chain --
+# they gate how much located biomass the set even attempts, then how much of
+# the delivered biomass the bag keeps.
+HERD_CHAIN={
+    "engage":(0.985,"drones reach the school before it sounds -- a fleeing "
+                    "shrimp burst is ~1 kn, a fish dog holds %.0f kn"%HERDING["drone_speed_kn"]),
+    "hold":(0.985,"fence integrity -- every inter-drone gap sits inside two "
+                  "stimulus reaches, so there is nothing to leak through"),
+    "funnel":(0.985,"V-convergence compacts the school onto the %.0f m mouth; "
+                    "headrope sonar census confirms it"%HERDING["net_mouth_m"]),
+}
+HERD_GATES={
+    "detect":0.92,   # omni sonar + %.0f%% sat forecast turns a zone into a set
+    "codend":0.96,   # delivered biomass the smart net actually bags
+}
+def herd_delivery_eff():
+    """Share of an engaged school the fence delivers to the net mouth."""
+    e=1.0
+    for frac,_ in HERD_CHAIN.values(): e*=frac
+    return e
+def herd_located_to_landed_eff():
+    """Share of a DETECTED school that lands in the cod end -- the honest
+    end-to-end number: detect x delivery x capture."""
+    return HERD_GATES["detect"]*herd_delivery_eff()*HERD_GATES["codend"]
+def herd_stimulus_reach_m():
+    """Effective stimulus radius per drone: acoustic near-field 8-10 m,
+    the rising bubble wall ~4 m, LED shadow ~5 m -- the union, conservatively."""
+    return 9.0
+def herd_spacing_ok():
+    """A fence works only if adjacent stimulus zones overlap -- spacing must
+    be under 2x the per-drone reach."""
+    return herd_fence_spacing_m()<=2.0*herd_stimulus_reach_m()
+def herd_drones_required():
+    """Drones the spread needs for a gap-free fence at the current spacing."""
+    return int(math.ceil(HERDING["spread_m"]/(2.0*herd_stimulus_reach_m())))
+def herd_endurance_margin_h():
+    """Battery margin after a worst-case set: deploy + hold + funnel + recover."""
+    used=(HERDING["set_hours"]+herd_deploy_min()/60.0+herd_recover_min()/60.0)
+    return HERDING["drone_endurance_h"]-used
+def herd_tether_len_m():
+    """Umbilical reach a fence slot demands: out to half the spread abeam plus
+    the vertical run from the reel (13 m up) to fence depth (~10 m down)."""
+    run=(HERDING["spread_m"]*0.5+HERD_NET["net_len_m"])
+    rise=13.0+10.0
+    return math.hypot(run,rise)*1.10       # +10% catenary + service loop
+def herd_set_sweep_nm():
+    """Ground the fence covers in one set (advance while the fence holds)."""
+    return HERDING["sweep_speed_kn"]*HERDING["set_hours"]
+def herd_area_swept_km2_per_set():
+    return HERDING["spread_m"]/1000.0*herd_set_sweep_nm()*1.852
 # Combined feed self-sufficiency (biofloc 50% + algae 30% + BSF 15% + yeast 5% = 100%)
 FEED_SELF_SUFFICIENCY={"biofloc_pct":50.0,"algae_pct":30.0,"bsf_pct":15.0,"yeast_pct":5.0,
                        "total_pct":100.0,"commercial_feed_pct":0.0,
@@ -882,7 +1194,8 @@ THERMAL_BANK={"shield_frac":0.24,"pcm_hold_frac":0.18}
 SOLAR_PEAK_KW=DIMS["solar_panel_m2"]*DIMS["solar_eff"]*SOLAR_IRRADIANCE_W/1000.0
 GENSET_RATED_KW=20000.0; GENSET_MIN_KW=2000.0; STEAM_RECOVER_FRAC=0.42; FLYWHEEL_MAX_RPM=12000.0
 REGEN_BOOST={"direct_frac":0.55,"pod_boost_eff":0.94,"sustain_kn":2.0}
-ELEC={"batt_mwh":180.0,"soc_min":0.12,"soc_max":0.98,"soc_start":0.65}
+ELEC={"batt_mwh":180.0,"soc_min":0.12,"soc_max":0.98,"soc_start":0.65,
+      "supercap_mwh":3.0}     # DC-link supercap tier (SE.py base design)
 STORAGE={"battery_rt":0.955,"supercap_rt":0.985,"flywheel_rt":0.910}
 GENSET_OFF_SOC=0.70; GENSET_ON_SOC=0.25; GENSET_CRIT_SOC=0.15
 MIN_CRUISE_KN=3.0; MAX_CRUISE_KN=18.0; CRUISE_KN=12.0
@@ -891,7 +1204,91 @@ SYNERGY={"sail_startup":True,"engine_primary":True,"regen_aggressive":0.75,
           "batt_boost_frac":0.20,"batt_boost_soc":0.75,"electro_taper":0.05,
           "sail_bonus_max":2.0,"sail_bonus_kw":250.0,"engine_rest_frac":0.60}
 ELECTROLYSER_MAX_KW=20000.0; ELECTRO_SOC_FLOOR=0.25
-THERM={"ambient_c":22.0,"overheat_c":125.0,"shutdown_c":155.0,"block_mass_kj_c":280.0,"heat_trap_frac":0.90}
+THERM={"ambient_c":22.0,"overheat_c":125.0,"shutdown_c":155.0,"block_mass_kj_c":280.0,"heat_trap_frac":0.90,
+       # --- V1.17c multi-mass heat network (SE.py base design) ---------------
+       # block soaks combustion waste; the heat shield couples it into the
+       # compact ORC boiler; the PCM bank stretches the steam tail after
+       # shutdown; the conditioner dumps heat only past overheat.
+       "shield_ua_kw_c":55.0,"boiler_mass_kj_c":1900.0,"boiler_leak_kw_c":0.5,
+       "condition_ua_kw_c":160.0,"second_stage_frac":0.28,"exhaust_to_boiler_frac":0.80,
+       "compound_stages":4,"stage_gain":0.12,"dual_chamber_gain":1.18,
+       "recovery_eff_cap":0.62,
+       "pcm_kj_c":4200.0,"pcm_couple_kw_c":6.0,"pcm_leak_kw_c":0.06}
+
+# Closed-loop ORC boiler working fluids (SE.py FLUIDS, F cycles the bench).
+# A low-boiling-point fluid flashes to vapour at low temperature, so the ORC
+# loop makes usable pressure from the rotary block's waste heat. Default is
+# AMMONIA: highest pressure, widest service interval, cannot freeze at sea.
+FLUIDS={
+    "AMMONIA": {"boil_c":26.0,"full_c":92.0, "max_bar":26.0,"gen_eff":1.00,
+                "freeze_c":-78.0, "heat_ok_c":230.0,"service_kwh":480000.0,"capacity_kw":9000.0},
+    "R245FA":  {"boil_c":30.0,"full_c":96.0, "max_bar":21.0,"gen_eff":0.94,
+                "freeze_c":-103.0,"heat_ok_c":175.0,"service_kwh":320000.0,"capacity_kw":8200.0},
+    "METHANOL":{"boil_c":55.0,"full_c":135.0,"max_bar":15.0,"gen_eff":0.84,
+                "freeze_c":-98.0, "heat_ok_c":195.0,"service_kwh":260000.0,"capacity_kw":7200.0},
+    "WATER":   {"boil_c":82.0,"full_c":165.0,"max_bar":14.0,"gen_eff":0.78,
+                "freeze_c":0.0,   "heat_ok_c":240.0,"service_kwh":200000.0,"capacity_kw":6400.0}}
+FLUID_ORDER=["AMMONIA","R245FA","METHANOL","WATER"]; DEFAULT_FLUID="AMMONIA"
+
+# TEG second heat path (SE.py base design). Seebeck thermoelectric film panels
+# clamped on the hot block make a small, bounded trickle straight from the
+# block-to-ambient delta-T -- a second heat-recovery path alongside the ORC
+# loop that keeps producing after shutdown while the block is still hot.
+TEG={"kw_per_c":0.55,"cap_kw":190.0}
+
+# PREDICTIVE DAY/NIGHT CONTROL + dynamic SOC window (SE.py base design).
+# The sun schedule is deterministic, so the controller reads the daylight
+# forecast ahead and reshapes the genset charge window: top the bank before
+# dusk, hold fire before dawn -- every kg of H2 is spent against real need.
+PREDICT={"lookahead_h":7.0,"samples":7,"soc_swing":0.10,"sun_ref":0.45}
+
+# HIGH-VOLTAGE DC BUS (modelled to scale, not a black box). The 180 MWh bank,
+# the SiC inverters and the EM-rail pods are wired on a marine MVDC busbar
+# trunk. Power = V x I, so bus current follows demanded power and the copper
+# run drops I^2 x R -- the honest copper loss the pods must cover.
+BUS={"pack_v_nom":3300.0,"bus_a_max":24000.0,"wire_mm2":240.0,"wire_len_m":80.0,
+     "trunks":8,                # parallel feeders; a 60-MW vessel splits the current
+     "cu_ohm_m":1.72e-8,"inverter_eff":0.997,"motor_eff":0.981}
+BUS_R_OHM=(BUS["cu_ohm_m"]*BUS["wire_len_m"]/(BUS["wire_mm2"]*1e-6))/BUS["trunks"]
+BUS_PACK_AH=ELEC["batt_mwh"]*1e6/BUS["pack_v_nom"]
+
+# ENGINE CONTROL UNIT. Genset on/off, charge-rate and the predictive window
+# run as a deterministic fixed-rate loop -- a real marine switchboard cannot
+# step megawatts in zero seconds, so the genset command slews.
+ECU={"loop_hz":200.0,"slew_kw_s":4000.0}
+
+# AUTO SUPERCHARGER boost ramp (SE.py base design). The slow centrifugal
+# blower spools up with the genset and packs the H2:air charge denser -- a
+# bounded top-end boost while the engine is lit. It burns H2 in exact
+# proportion to the extra output: deeper combustion, not free power.
+SUPERCHARGER_BOOST_GAIN=0.22; SUPERCHARGER_RAMP_RATE=0.42
+
+# MARINE ENGINE PHYSICS (SE.py solve_marine_physics constants). First-order
+# physics INSIDE the 8-chamber H2 rotary block: ideal-gas charge mass
+# (PV = nRT), AFR-based H2 fuel flow, the indicated -> mechanical -> generator
+# efficiency chain, hydraulic clamp force -> clutch torque -> slip heat, a
+# two-stage exhaust split (turbo boost work -> stage-2 recovery turbine ->
+# boiler), and the ORC recovery path. The voyage controller decides WHEN the
+# genset fires; this decides what a firing engine is doing.
+MPHYS={"ambient_pa":101325.0,"intake_temp_k":301.0,"air_r":287.05,
+    "h2_lhv_j_kg":119.93e6,"target_afr":36.0,
+    "volumetric_eff":0.80,"seal_eff":0.88,
+    "indicated_eff":0.65,"mechanical_eff":0.955,"generator_eff":0.975,
+    "gear_mesh_eff":0.988,"turbo_pressure_ratio":1.22,"gate_psi_frac":0.07,
+    "hydraulic_max_bar":85.0,"main_clutch_area_m2":0.42,"ring_bind_area_m2":0.58,
+    "friction_mu_wet":0.078,"main_clutch_radius_m":0.34,"ring_bind_radius_m":0.30,
+    "bearing_drag_kw":22.0,"friction_kw_cap":1400.0,
+    "heat_to_block_frac":0.44,"exhaust_turbo_frac":0.26,
+    "coolant_ua_kw_c":2.4,"thermal_mass_kj_c":2800.0,
+    "overheat_c":THERM["overheat_c"],"shutdown_c":THERM["shutdown_c"],
+    "max_temp_c":THERM["shutdown_c"]+30.0,
+    "ring_idle_rpm":60.0,"ring_rated_rpm":300.0}
+
+# GENSET thermal cutoff (SE.py GENSET_OFF_TEMP_C): once the block is hot
+# enough to keep the boiler steaming on its own, the genset stops and rests --
+# the PCM + boiler keep charging for minutes after. Refires on the SOC floor.
+GENSET_OFF_TEMP_C=118.0
+GENSET_CRIT_H2_KG=500.0      # dry-tank floor: engine won't fire below this
 
 # ============================================================================
 # SECTION 4 -- BIOLOGY, PHYSICAL CAPACITY, AND THE PRODUCTION CHAIN
@@ -1372,6 +1769,55 @@ def plan_verification():
         "solar %.1f MW peak + OTEC %.1f MW baseload, H2 from seawater"%(
             DIMS["solar_panel_m2"]*SOLAR_ARRAY["eff"]/1000.0,OTEC["rated_kw"]/1000.0),
         True)
+    # -- FARM tab claims (drone shrimp herding) ------------------------------
+    add("%d tethered fish dogs on the multi-thread reel"%HERDING["tethered_drones"],
+        "%d drums x %d grooves = %d line slots, %d-drone magazine"%(
+            HERDING["reel_drums"],HERDING["lines_per_drum"],
+            HERDING["reel_drums"]*HERDING["lines_per_drum"],HERDING["magazine_drones"]),
+        HERDING["reel_drums"]*HERDING["lines_per_drum"]>=HERDING["tethered_drones"]
+        and HERDING["magazine_drones"]>=HERDING["tethered_drones"])
+    add("Full spread dropped inside %.0f min"%HERDING["deploy_time_min"],
+        "%d chutes at %.0f drones/min -> %.1f min, carousel turns %.0f slots"%(
+            HERDING["drop_chutes"],HERDING["drop_per_min"],herd_deploy_min(),
+            HERDING["magazine_slots"]),
+        herd_deploy_min()<=HERDING["deploy_time_min"])
+    add("%.0f t/set from a %.0fx concentrated school"%(
+            HERDING["catch_t_per_set"],HERDING["concentration_x"]),
+        "baseline %.0f t/set x %.0f concentration = %.0f t -- the model's own ceiling"%(
+            HERDING["baseline_catch_t_per_set"],HERDING["concentration_x"],
+            HERDING["baseline_catch_t_per_set"]*HERDING["concentration_x"]),
+        HERDING["catch_t_per_set"]<=HERDING["baseline_catch_t_per_set"]*HERDING["concentration_x"])
+    add("Own trawl lands only its share of recapture",
+        "%.0f t/yr = %.2f%% of the vessel's recapture; partner + AI trawlers land the rest"%(
+            herd_catch_t_per_year(),herd_own_share_of_recapture()*100),
+        herd_own_share_of_recapture()<=1.0)
+    add("Herding spread runs on surplus solar",
+        "%.0f kW/set x %d sets = %.1f MWh/day vs %.0f MWh/day conservative solar"%(
+            herd_power_kw(),HERDING["sets_per_day"],
+            herd_energy_kwh_per_set()*HERDING["sets_per_day"]/1000.0,
+            SOLAR_PEAK_KW*24.0*0.30/1000.0),
+        herd_energy_kwh_per_set()*HERDING["sets_per_day"]<=SOLAR_PEAK_KW*24.0*0.30)
+    # -- derived herding physics (SECTION 3 chain) -----------------------------
+    add("%.0f%% delivery to the net mouth"%(HERDING["herd_eff_pct"]),
+        "engage x hold x funnel = %.1f%% derived; detect->landed %.0f%%"%(
+            herd_delivery_eff()*100.0,herd_located_to_landed_eff()*100.0),
+        herd_delivery_eff()>=HERDING["herd_eff_pct"]/100.0,
+        herd_delivery_eff()>=HERDING["herd_eff_pct"]/100.0-0.03)
+    add("Gap-free %.0f m stimulus fence"%HERDING["spread_m"],
+        "%d drones needed at %.0f m reach vs %d deployed (%.1f m spacing)"%(
+            herd_drones_required(),herd_stimulus_reach_m()*2.0,
+            HERDING["tethered_drones"],herd_fence_spacing_m()),
+        herd_spacing_ok() and HERDING["tethered_drones"]>=herd_drones_required())
+    add("Drone battery covers the set",
+        "%.1f h endurance vs %.1f h set+deploy+recover = +%.1f h margin"%(
+            HERDING["drone_endurance_h"],
+            HERDING["drone_endurance_h"]-herd_endurance_margin_h(),
+            herd_endurance_margin_h()),
+        herd_endurance_margin_h()>=2.0,herd_endurance_margin_h()>=0.5)
+    add("Umbilical reaches the outermost fence slot",
+        "%.0f m required (%.0f m abeam + depth run) -- reel drum carries it"%(
+            herd_tether_len_m(),HERDING["spread_m"]*0.5),
+        herd_tether_len_m()<=HERDING["tether_len_m"])
     return rows
 
 VOYAGE={"origin":"EQUATORIAL NURSERY","dest":"NEXT RELEASE ZONE","distance_nm":2400.0,
@@ -2199,9 +2645,11 @@ FINANCIAL_MODEL={
         "global_shrimp_supply_2024_t":115.0e6,
         "market_growth_pct":5.0,
         "price_usd_kg":SCENARIOS["ENGINEERING"]["price_usd_kg"],
-        "price_note":"At full ramp the fleet supplies 92%% of global shrimp. "
+        "price_note":"At full ramp the fleet supplies ~%.0f%% of global shrimp. "
                      "Price held at $%.2f/kg via market-making volume and 18-nation "
-                     "EEZ exclusivity."%SCENARIOS["ENGINEERING"]["price_usd_kg"],
+                     "EEZ exclusivity."%(
+                        (fleet_harvest_t_per_year()*PROCESSING_YIELD)/115.0e6*100.0,
+                        SCENARIOS["ENGINEERING"]["price_usd_kg"]),
         "vessel_cost_usd":FINANCE["vessel_cost_usd"],
         "vessel_useful_life_years":25,
         "depreciation_method":"straight-line",
@@ -2321,10 +2769,12 @@ FINANCIAL_MODEL["ebitda_margin_pct_year10"]=_LAST["ebitda_usd"]/_LAST["revenue_u
 FINANCIAL_MODEL["net_margin_pct_year10"]=_LAST["net_usd"]/_LAST["revenue_usd"]*100.0
 FINANCIAL_MODEL["honest_note"]=(
     "Full-scale ocean ranching: 12 vessels producing %.1f M t/yr of shrimp, "
-    "supplying 92%% of the global market. Revenue $%.0fB/yr, EBITDA $%.0fB/yr, "
-    "payback in %.1f years. CAPEX $%.1fB. This is the ENGINEERING case -- "
-    "derived from hull volume, fecundity, survival, and recapture, not asserted."%(
+    "supplying ~%.0f%% of the reference global market. Revenue $%.0fB/yr, "
+    "EBITDA $%.0fB/yr, payback in %.1f years. CAPEX $%.1fB. This is the "
+    "ENGINEERING case -- derived from hull volume, fecundity, survival, and "
+    "recapture, not asserted."%(
         fleet_harvest_t_per_year()/1e6,
+        (fleet_harvest_t_per_year()*PROCESSING_YIELD)/115.0e6*100.0,
         FINANCE["fleet_revenue_per_year_usd"]/1e9,
         FINANCE["fleet_ebitda_per_year_usd"]/1e9,
         FINANCE["payback_years"],
@@ -3131,11 +3581,23 @@ C_AI=(100,180,255); C_AI_DRIVE=(80,160,255); C_AI_BREED=(180,120,255); C_AI_HERD
 C_MAP_OCEAN=(12,28,52); C_MAP_LAND=(40,55,40); C_MAP_GRID=(20,35,55); C_MAP_HUB=(255,200,80)
 C_MAP_RELEASE=(90,220,130); C_MAP_ROUTE=(90,200,255); C_MAP_ROUTE_SPRING=(120,220,100)
 C_MAP_ROUTE_SUMMER=(255,200,80); C_MAP_ROUTE_AUTUMN=(255,140,80); C_MAP_ROUTE_WINTER=(100,180,255)
+# Drone shrimp-herding (FARM tab)
+C_DRONE=(90,130,170); C_DRONE_HI=(140,190,240); C_DRONE_NOSE=(200,220,235)
+C_REEL=(120,110,95); C_REEL_BAND=(200,180,120); C_GANTRY=(95,105,120)
+C_CHUTE=(70,140,180); C_MAG=(110,95,70); C_UMBIL=(60,70,85)
+C_NET=(110,150,120); C_NET_FRAME=(180,190,150); C_COD=(150,120,90)
+C_BUBBLE=(160,220,255); C_PING=(120,200,255); C_EFIELD=(255,240,140)
+C_SCHOOL=(255,150,110); C_SEABED=(30,44,52); C_WATERLINE=(60,120,160)
+C_BUOY=(230,120,60); C_AUV_BODY=(150,170,200)
+C_CRADLE=(60,160,170); C_CONTROL=(70,80,95); C_BOOST=(120,200,120)
+C_RANCH_RELEASE=(255,200,140); C_LED=(120,220,255)
+C_BP=(110,170,230)                    # blueprint linework blue (SPEC sheet / B mode)
+BG_MODEL_TOP=(60,64,72); BG_MODEL_BOT=(34,38,46)   # neutral grey model viewport
 
 # ============================================================================
 # SECTION 7 -- MINI 3D ENGINE (shared with SE.py)
 # ============================================================================
-VISUAL_DETAIL=1.25
+VISUAL_DETAIL=2.0
 def rot_x(a):
     c,s=math.cos(a),math.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]],dtype=float)
 def rot_y(a):
@@ -3145,18 +3607,36 @@ def rot_z(a):
 
 class Mesh:
     def __init__(self,verts,faces,color,name="",spin=1.0,group="default",
-                 pivot=(0.,0.,0.),tilt=(0.,0.),hot=False,selectable=False):
+                 pivot=(0.,0.,0.),tilt=(0.,0.),hot=False,selectable=False,
+                 alpha=0.0,anim=None):
         self.verts=np.asarray(verts,dtype=float); self.faces=faces; self.color=color
         self.name=name; self.spin=spin; self.group=group; self.pivot=np.asarray(pivot,dtype=float)
         self.tilt=tilt; self.hot=hot; self.chamber_index=None; self.selectable=selectable
-    def world_verts(self,angle,selector_radius=None):
-        v=self.verts
-        if self.spin: v=v@rot_z(angle*self.spin).T
+        self.alpha=alpha            # 0=opaque; >0 drawn in the translucent pass
+        self.anim=anim              # FARM tag: dict {kind,i,p0,h0} -> live pose
+    def _tilt_T(self):
+        """(rot_x@rot_y).T for the current tilt -- cached while the tilt is
+        not being animated (anim meshes rewrite .tilt every frame)."""
         rx,ry=self.tilt
-        if rx or ry: v=v@(rot_x(rx)@rot_y(ry)).T
-        pivot=self.pivot.copy()
-        if self.selectable and selector_radius is not None: pivot[0]=selector_radius
-        return v+pivot
+        if self.anim is None:
+            tt=getattr(self,"_wvt",None)
+            if tt is None:
+                self._wvt=tt=(rot_x(rx)@rot_y(ry)).T if (rx and ry) else \
+                    (rot_y(ry).T if ry else rot_x(rx).T)
+            return tt
+        if not rx: return rot_y(ry).T
+        if not ry: return rot_x(rx).T
+        return (rot_x(rx)@rot_y(ry)).T
+    def world_verts(self,angle,selector_radius=None):
+        v=self.verts; rx,ry=self.tilt
+        if self.spin:
+            R=rot_z(angle*self.spin).T
+            v=v@(R@self._tilt_T()) if (rx or ry) else v@R
+        elif rx or ry: v=v@self._tilt_T()
+        if self.selectable and selector_radius is not None:
+            pivot=self.pivot.copy(); pivot[0]=selector_radius
+            return v+pivot
+        return v+self.pivot
 
 def _detail_seg(seg): return max(8,int(round(seg*VISUAL_DETAIL)))
 def _annulus_cylinder(r_out,r_in,z0,z1,seg=44):
@@ -3215,10 +3695,98 @@ def _place_spinner(meshes,pivot,tilt,group):
 def _mix(c1,c2,t):
     return (int(c1[0]+(c2[0]-c1[0])*t),int(c1[1]+(c2[1]-c1[1])*t),int(c1[2]+(c2[2]-c1[2])*t))
 def clamp(x,lo=0.0,hi=1.0): return max(lo,min(hi,x))
+def _face_index(m):
+    """(faces array, face lengths) cached on the mesh -- pads mixed tri/quad
+    lists to a rectangular int array by repeating the last index so the whole
+    cull/shade/depth pipeline can run vectorised in render()."""
+    fa=getattr(m,"_farr",None)
+    if fa is None:
+        if not m.faces:
+            m._farr=np.zeros((0,3),dtype=np.int64); m._flen=np.zeros(0,dtype=np.int64)
+        else:
+            flen=np.fromiter((len(f) for f in m.faces),dtype=np.int64,count=len(m.faces))
+            mx=int(flen.max()); fa=np.empty((len(m.faces),mx),dtype=np.int64)
+            for i,f in enumerate(m.faces):
+                fa[i,:len(f)]=f
+                if len(f)<mx: fa[i,len(f):]=f[-1]
+            m._farr=fa; m._flen=flen
+        fa=m._farr
+    return fa,m._flen
+def _is_closed_mesh(m):
+    """True when every undirected edge is shared by exactly two faces -- i.e.
+    the mesh is a watertight solid, so backfaces can never be seen directly
+    and render() may cull them (open sheets + alpha surfaces keep both sides)."""
+    c=getattr(m,"_closed",None)
+    if c is None:
+        # directed edge census: a consistently-wound watertight mesh walks
+        # every directed edge exactly once (each shared edge, once per side)
+        ec={}
+        for f in m.faces:
+            nf=len(f)
+            for i in range(nf):
+                e=(f[i],f[(i+1)%nf])
+                ec[e]=ec.get(e,0)+1
+        m._closed=bool(ec) and all(v==1 for v in ec.values())
+        c=m._closed
+    return c
+def _consolidate_meshes(meshes):
+    """Merge sibling meshes that share render state into single meshes,
+    cached per part as ._rmeshes -- hundreds of small meshes (wraps, bolts,
+    panels, rotor blades on a shared hub) collapse into dozens, cutting the
+    per-mesh loop overhead in render() without touching part.meshes.
+    Static siblings bake the pivot into their verts; rigid siblings (shared
+    pivot + identical spin/tilt) keep verts raw so the merged mesh still
+    rotates about the common pivot."""
+    out=[]; groups={}; agroups={}
+    for m in meshes:
+        an=m.anim
+        if an is not None:
+            # farm fish-dog/AUV siblings sharing one live pose: bake the
+            # local offset lp into the verts so ONE merged mesh + ONE pivot
+            # write drives them (lp is metres, verts are display units)
+            if (an.get("kind") in ("drone","auv") and "lp" in an
+                    and not (m.spin or m.tilt[0] or m.tilt[1])):
+                key=(an["kind"],an.get("i"),m.color,m.alpha,m.group,
+                     m.name,m.hot,m.selectable)
+                g=agroups.get(key)
+                if g is None: agroups[key]=g=[[],[],0,m]
+                g[0].append(m.verts+np.asarray(an["lp"],float)*FARM_DISP)
+                g[1].extend(tuple(i2+g[2] for i2 in f) for f in m.faces)
+                g[2]+=len(m.verts)
+            else: out.append(m)
+            continue
+        if m.chamber_index is not None:
+            out.append(m); continue
+        bake=not (m.spin or m.tilt[0] or m.tilt[1] or m.selectable)
+        key=(m.color,m.alpha,m.group,m.name,m.hot,float(m.spin),
+             m.tilt[0],m.tilt[1],tuple(np.round(m.pivot,9)),m.selectable)
+        g=groups.get(key)
+        if g is None:
+            groups[key]=g=[[],[],0,m,bake]
+        g[0].append(m.verts+m.pivot if bake else m.verts)
+        g[1].extend(tuple(i+g[2] for i in f) for f in m.faces)
+        g[2]+=len(m.verts)
+    for (col,al,grp,name,hot,spin,tx,ty,piv,sel),(vl,fl,_n,ref,bake) in groups.items():
+        if len(vl)==1:
+            out.append(ref); continue
+        mm=Mesh(np.vstack(vl),fl,col,name=name,spin=spin if not bake else 0.0,
+                group=grp,pivot=(0.,0.,0.) if bake else np.asarray(piv,float))
+        mm.tilt=(0.,0.) if bake else (tx,ty); mm.alpha=al; mm.hot=hot
+        mm.selectable=sel
+        out.append(mm)
+    for (kind,ai,col,al,grp,name,hot,sel),(vl,fl,_n,ref) in agroups.items():
+        if len(vl)==1:
+            out.append(ref); continue
+        mm=Mesh(np.vstack(vl),fl,col,name=name,group=grp)
+        mm.alpha=al; mm.hot=hot; mm.selectable=sel
+        na=dict(ref.anim); na["lp"]=np.zeros(3); mm.anim=na
+        out.append(mm)
+    return out
 def _static(v,f,col,name="",group="static"): return Mesh(v,f,col,name=name,spin=0.0,group=group)
 def remap_yz(v): return [(p[0],p[2],p[1]) for p in v]
 def _eng(m): return m*ENG_DISP
 def _hatch(m): return m*HATCH_DISP
+def _farm(m): return m*FARM_DISP
 
 # ============================================================================
 # SECTION 8 -- GEOMETRY BUILDERS (vessel, engine, hatchery)
@@ -3227,6 +3795,120 @@ def _hatch(m): return m*HATCH_DISP
 def _polar_box(r,a,zc,sx,sy,sz,col,group,name="",chamber=None):
     v,f=_box(r,0.0,zc,sx,sy,sz); v=np.asarray(v,float)@rot_z(a).T
     m=Mesh(v,f,col,name=name,group=group); m.chamber_index=chamber; return m
+
+def _grp(meshes,group):
+    for m in meshes: m.group=group
+    return meshes
+def _bolt_ring(r,zc,n,bx,by,bz,col,group,name="bolt",tilt_a=0.0):
+    """A ring of small box 'bolts' -- the SE.py manufacturing detail that turns
+    a smooth disc into a machined assembly (flange bolts, clutch rivets)."""
+    out=[]
+    for i in range(n):
+        a=i*2*math.pi/n+tilt_a
+        v,f=_box(r,0.0,zc,bx,by,bz); v=np.asarray(v,float)@rot_z(a).T
+        out.append(Mesh(v,f,col,name=name,group=group))
+    return out
+def _fin_ring(r,zc,n,col,group,fl=0.08,fw=0.02,fz=None,tilt=0.35,name="fin"):
+    """A ring of tilted box fins -- turbine blades, compressor vanes, heat fins.
+    Each fin is pitched about its own radial axis so it reads as a blade that
+    scoops the flow, not a radial spoke (SE.py base design)."""
+    if fz is None: fz=fl*0.8
+    out=[]
+    for i in range(n):
+        a=i*2*math.pi/n
+        v,f=_box(r,0.0,zc,fl,fw,fz); v=np.asarray(v,float)
+        c=np.array([r,0.0,zc])
+        v=(v-c)@rot_x(tilt).T+c          # pitch about the fin's own axis
+        v=v@rot_z(a).T                   # then orbit it to slot i
+        out.append(Mesh(v,f,col,name=name,group=group))
+    return out
+def _arc_shell(r_out,r_in,a0,a1,z0,z1,seg=24):
+    """A partial annular arc segment (a 'shoe') spanning a0..a1 -- the
+    compression-gate sealed shoe. Same winding as _annulus_cylinder plus two
+    flat end caps at the arc limits (SE.py base design)."""
+    seg=max(4,_detail_seg(seg)); verts,faces=[],[]
+    ang=np.linspace(a0,a1,seg,endpoint=True)
+    for z in (z0,z1):
+        for a in ang: verts.append((r_out*math.cos(a),r_out*math.sin(a),z))
+        for a in ang: verts.append((r_in*math.cos(a),r_in*math.sin(a),z))
+    n=len(ang)
+    def oo(layer,i): return layer*(2*n)+i
+    def ii(layer,i): return layer*(2*n)+n+i
+    for i in range(n-1):
+        faces.append((oo(0,i),oo(0,i+1),oo(1,i+1),oo(1,i)))
+        faces.append((ii(0,i),ii(1,i),ii(1,i+1),ii(0,i+1)))
+        faces.append((oo(0,i),ii(0,i),ii(0,i+1),oo(0,i+1)))
+        faces.append((oo(1,i),oo(1,i+1),ii(1,i+1),ii(1,i)))
+    for i in (0,n-1):
+        faces.append((oo(0,i),oo(1,i),ii(1,i),ii(0,i)))
+    return verts,faces
+def _gear_teeth(radius,zc,count,half_th,col,pivot=(0.,0.,0.),tilt=(0.,0.),
+                selectable=False,group="trans",name="gear tooth"):
+    """A ring of gear teeth in a part's LOCAL frame (SE.py base design)."""
+    meshes=[]
+    for k in range(count):
+        a=k*2*math.pi/count
+        cx,cy=radius*math.cos(a),radius*math.sin(a)
+        v,f=_box(cx,cy,zc,_eng(0.05),_eng(0.04),half_th*2)
+        v=(np.asarray(v)-np.array([cx,cy,zc]))@rot_z(a).T+np.array([cx,cy,zc])
+        meshes.append(Mesh(v,f,col,pivot=pivot,tilt=tilt,selectable=selectable,
+                           group=group,name=name))
+    return meshes
+
+class _CFont:
+    """pygame Font proxy that memoises render() surfaces and size() lookups.
+    The HUD/SPEC sheets re-render hundreds of identical strings every frame;
+    each hit is a dict lookup instead of a TTF rasterisation pass (SE.py)."""
+    __slots__=("_f","_rc","_sc")
+    def __init__(self,font): self._f=font; self._rc={}; self._sc={}
+    def render(self,text,aa,color,background=None):
+        key=(text,aa,color,background); img=self._rc.get(key)
+        if img is None:
+            if len(self._rc)>4000: self._rc.clear()
+            img=self._f.render(text,aa,color,background); self._rc[key]=img
+        return img
+    def size(self,text):
+        s=self._sc.get(text)
+        if s is None:
+            if len(self._sc)>4000: self._sc.clear()
+            s=self._sc[text]=self._f.size(text)
+        return s
+    def __getattr__(self,name): return getattr(self._f,name)
+
+# --- MULTILAYER RING-CLUTCH transmission (SE.py base design) -----------------
+# Concentric ring LAYERS in one plane; each annular gap between two rings is a
+# wet-clutch layer fed by high-pressure hydraulic fluid. Pressure couples the
+# layers from the CENTRE OUTWARD, so the outermost gap to receive pressure is
+# the "slipped layer" that modulates output. The ratchet shifter can only
+# SLIDE UP; to reach a lower ring it first vents, returns to the inner park
+# rail, then slides up to the target and seats the receival pinion BEFORE the
+# gap pressure ramps the new gear's output.
+TRANS_PARK_POS=-0.45    # shifter park rail below ring 1 (ratchet reset)
+TRANS_SLIDE_RATE=2.6    # shifter slide speed, rings/sec
+TRANS_CREEP=0.055       # viscous-drag speed fraction of an unpressurized ring
+TRANS_GAP_HALF_M=0.010  # half-width of each annular oil gap (~20 mm film)
+
+def trans_ring_edges():
+    """(inner, outer) radii for each transmission ring, centre outward."""
+    nrings=DIMS["trans_rings"]
+    ro=DIMS["trans_outer_d_m"]/2; ri=DIMS["trans_inner_d_m"]/2
+    step=(ro-ri)/nrings
+    return [(ri+step*k,ri+step*(k+1)) for k in range(nrings)]
+def trans_ratios():
+    edges=trans_ring_edges(); pitch=[(i+o)*0.5 for i,o in edges]
+    base=max(1e-6,pitch[0]); return [r/base for r in pitch]
+def output_gear_mesh_radius(gear):
+    """Centre radius (metres) for the receival pinion at the selected ring."""
+    edges=trans_ring_edges(); gear=max(0,min(len(edges)-1,int(gear)))
+    inner,outer=edges[gear]; rog=DIMS["out_gear_d_m"]/2
+    return min(outer-rog*0.35,inner+rog+0.005)
+def output_gear_mesh_radius_f(pos):
+    """CONTINUOUS shifter radius while the pinion slides between rings."""
+    edges=trans_ring_edges(); rog=DIMS["out_gear_d_m"]/2
+    step=(edges[1][0]-edges[0][0]) if len(edges)>1 else 0.03
+    r=edges[0][0]+rog+0.005+pos*step
+    return max(output_gear_mesh_radius(0)+TRANS_PARK_POS*step,
+               min(output_gear_mesh_radius(len(edges)-1),r))
 
 def build_genset_parts():
     parts=[]; R_out=_eng(DIMS["ring_outer_d_m"]/2); R_in=_eng(DIMS["ring_inner_d_m"]/2)
@@ -3445,6 +4127,142 @@ def build_genset_parts():
          "TECH: radiant heat focusing + PCM thermal storage, 15 min carryover",
          "SIM: 20 years zero-failure, PCM degradation <1%%"],
         11,(0.6,0.6,0.4),C_RING_HOT))
+
+    # =========================================================================
+    # V1.17c refinements (SE.py base design): compression-gate shoe, cooling
+    # ring heat-trap jacket, multi-plate clutch stack detail, hydraulic clamp
+    # pack, 2nd-stage recovery turbine, TEG film bank, MVDC trunk.
+    # =========================================================================
+    # -- COMPRESSION GATE: sealed shoe squeezes the charge ahead of the injector
+    gate_span=math.radians(DIMS["gate_span_deg"])
+    g_r0=R_out+_eng(DIMS["gate_clearance_m"])
+    g_r1=g_r0+_eng(DIMS["gate_thick_m"])
+    # shoe rides just upstream of the rim-top injector (which sits at +Y)
+    a1=math.pi/2.0-0.10; a0=a1-gate_span
+    gv,gf=_arc_shell(g_r1,g_r0,a0,a1,z0,z1)
+    gate_m=[Mesh(gv,gf,(150,90,60),name="gate shoe",group="gate")]
+    # actuator posts holding the shoe against ring pressure
+    for a in (a0+0.05,a1-0.05):
+        px,py=g_r1*math.cos(a),g_r1*math.sin(a)
+        v,f=_solid_cylinder(_eng(0.03),z0,z1,seg=8)
+        v=np.asarray(v,float)+np.array([px,py,0.0])
+        gate_m.append(Mesh(v,f,_mix(C_SHAFT,(0,0,0),0.2),name="gate post",group="gate"))
+    parts.append(Part("gate","COMPRESSION GATE (SEALED SHOE)",gate_m,
+        ["sealed arc shoe rides the ring rim with a %.0f mm gap"%(DIMS["gate_clearance_m"]*1000),
+         "squeezes the H2:air charge ahead of the injector -> higher effective CR",
+         "SUB: %.0f deg span, sprung ceramic- faced shoe"%DIMS["gate_span_deg"],
+         "SUB: 2 actuator posts (load-cell force feedback)",
+         "SUB: gas-path seal: labyrinth edge, ablative coating",
+         "MAT: 4140 shoe, ceramic face, Inconel posts",
+         "TECH: passive compression assist, +%.0f%% charge density"%(MPHYS["gate_psi_frac"]*100),
+         "SIM: physics models it as gate_psi_frac inside pressure_ratio"],
+        12,(0.9,0.2,0),(150,90,60)))
+    # -- COOLING RING: heat-trap jacket feeds the ORC boiler -------------------
+    cg0=R_out+_eng(DIMS["coolring_gap_m"]); cg1=cg0+_eng(DIMS["coolring_thick_m"])
+    cool_m=[]
+    v,f=_annulus_cylinder(cg1,cg0,z0,z1,seg=48)
+    cool_m.append(Mesh(v,f,(60,90,120),name="cooling ring jacket",group="coolring",alpha=0.55))
+    # radial heat fingers bridging the gap
+    cool_m+=_fin_ring(R_out+_eng(DIMS["coolring_gap_m"]*0.5),0.0,DIMS["coolring_fingers"],
+                      _mix(C_STEAM,(0,0,0),0.2),"coolring",fl=_eng(DIMS["coolring_gap_m"]),
+                      fw=_eng(0.015),fz=(z1-z0)*0.8,tilt=0.0,name="heat finger")
+    parts.append(Part("coolring","COOLING RING (HEAT-TRAP JACKET)",cool_m,
+        ["%d radial fingers pull block heat into the coolant ring"%DIMS["coolring_fingers"],
+         "traps %.0f%% of waste heat, feeds the ORC boiler"%(THERM["heat_trap_frac"]*100),
+         "SUB: closed-loop water jacket (UA %.1f kW/C)"%MPHYS["coolant_ua_kw_c"],
+         "SUB: seawater conditioner engages only past %.0f C"%MPHYS["overheat_c"],
+         "MAT: Cu-Ni ring, 316L fingers, viton seals",
+         "TECH: heat-trap jacket -> shield coupling -> ORC boiler",
+         "SIM: the heat network solves block->ring->boiler every tick"],
+        13,(0.5,0.7,0.6),(60,90,120)))
+    # -- MULTI-PLATE CLUTCH STACK detail on the main clutch --------------------
+    np_=DIMS["clutch_n_plates"]; gap=_eng(DIMS["clutch_gap_m"])
+    for i in range(np_-2):
+        pz=z1+_eng(0.02)+i*gap
+        v,f=_annulus_cylinder(rc,rc-_eng(0.05),pz,pz+_eng(0.006),seg=28)
+        parts[3].meshes.append(Mesh(v,f,_mix((60,140,165),C_FR,0.5),
+                                    name="clutch plate %d"%(i+1),group="core"))
+    # flange bolt circle on the direct-clutch disc
+    parts[6].meshes+=_bolt_ring(cp_d*0.78,cpz+cp_t*0.5,12,
+                                _eng(0.025),_eng(0.025),cp_t*0.7,
+                                _mix(C_CL_DK,(0,0,0),0.2),"clutch",name="flange bolt")
+    # -- HYDRAULIC CLAMP PACK --------------------------------------------------
+    hy_m=[]
+    for i,(px,py,l,d) in enumerate(((0.9,0.5,DIMS["hyd_pump_len_m"],DIMS["hyd_pump_d_m"]),
+                                    (0.9,-0.5,DIMS["hyd_acc_len_m"],DIMS["hyd_acc_d_m"]))):
+        v,f=_solid_cylinder(_eng(d/2),-_eng(l/2),_eng(l/2),seg=16)
+        v=np.asarray(v,float)+np.array([_eng(px),_eng(py),cpz])
+        hy_m.append(Mesh(v,f,_mix(C_H2,(0,0,0),0.15),
+                         name="hyd pump" if i==0 else "hyd accumulator",group="hyd"))
+    v,f=_box(_eng(1.05),_eng(-0.9),cpz,_eng(DIMS["hyd_rsv_w_m"]),_eng(DIMS["hyd_rsv_w_m"]),_eng(0.18))
+    hy_m.append(Mesh(v,f,_mix(C_H2,(0,0,0),0.3),name="fluid reservoir",group="hyd"))
+    parts.append(Part("hydpack","CLUTCH HYDRAULIC PACK",hy_m,
+        ["%.0f bar hydraulic pack feeds the wet clutches + ring binds"%MPHYS["hydraulic_max_bar"],
+         "clamp force -> clutch torque -> slip heat (solved per tick)",
+         "SUB: piston pump (%.2f m) + accumulator (%.2f m) + reservoir"%(
+             DIMS["hyd_pump_len_m"],DIMS["hyd_acc_len_m"]),
+         "SUB: proportional valve per circuit (bench HYD CLAMP slider)",
+         "MAT: 316L bodies, viton seals, MIL-PRF-83282 fluid",
+         "TECH: %.0f bar -> %.0f kN main clamp -> %.0f Nm"%(
+             MPHYS["hydraulic_max_bar"],MPHYS["hydraulic_max_bar"]*1e5*MPHYS["main_clutch_area_m2"]/1e3,
+             MPHYS["hydraulic_max_bar"]*1e5*MPHYS["main_clutch_area_m2"]*MPHYS["friction_mu_wet"]*MPHYS["main_clutch_radius_m"]),
+         "SIM: solve_marine_physics turns the slider into torque + slip heat"],
+        14,(0.9,0.5,-0.4),C_H2))
+    # -- 2ND-STAGE EXHAUST RECOVERY TURBINE ------------------------------------
+    r2=_eng(DIMS["recov2_turbine_d_m"]/2); rg=_eng(DIMS["recov2_gen_d_m"]/2)
+    r2_m=[]
+    r2_m+=_fin_ring(r2*0.8,bl_l+_eng(0.30),14,(255,150,60),"recov2",
+                    fl=r2*0.45,fw=_eng(0.02),fz=_eng(0.10),tilt=0.42,
+                    name="recovery blade")
+    v,f=_solid_cylinder(rg,bl_l+_eng(0.38),bl_l+_eng(0.52),seg=16)
+    r2_m.append(Mesh(v,f,C_GEN,name="recovery gen",group="recov2"))
+    parts.append(Part("recov2","STAGE-2 EXHAUST RECOVERY",r2_m,
+        ["14-blade radial turbine on the post-turbo exhaust",
+         "recovers %.0f%% of remaining exhaust as electricity"%(THERM["second_stage_frac"]*100),
+         "SUB: post-turbo stream (turbo gets first %.0f%%)"%(MPHYS["exhaust_turbo_frac"]*100),
+         "SUB: axial-flux micro-gen, SiC rectifier to DC bus",
+         "MAT: Inconel 718 blades, 316L scroll",
+         "TECH: two-stage split: turbo work -> stage-2 elec -> boiler heat",
+         "SIM: exhaust splits inside _heat_network every tick"],
+        15,(0.7,0.3,-0.5),(255,150,60)))
+    # -- TEG HEAT-FILM BANK -----------------------------------------------------
+    teg_m=[]
+    n_teg=DIMS["teg_panels"]
+    for i in range(n_teg):
+        a=i*2*math.pi/n_teg+0.3
+        rr=R_out*1.02
+        cx,cy=rr*math.cos(a),rr*math.sin(a)
+        v,f=_box(cx,cy,z0-_eng(0.03),_eng(DIMS["teg_panel_w_m"]),
+                 _eng(DIMS["teg_panel_t_m"]),_eng(DIMS["teg_panel_w_m"]*0.6))
+        teg_m.append(Mesh(v,f,_mix(C_WARN,C_GOOD,0.4),name="TEG panel",group="teg"))
+    parts.append(Part("teg","TEG HEAT-FILM BANK",teg_m,
+        ["%d Seebeck film panels clamped on the hot block"%n_teg,
+         "%.2f kW/degC block-to-ambient, %.0f kW cap"%(TEG["kw_per_c"],TEG["cap_kw"]),
+         "SUB: Bi2Te3 skutterudite film, 6-zone clamp array",
+         "SUB: keeps producing while the block is hot after shutdown",
+         "MAT: Bi2Te3 film, Cu busbar, ceramic standoff",
+         "TECH: second heat path beside the ORC loop",
+         "SIM: TEG kW = kw_per_c x max(0, block-ambient), capped"],
+        16,(0.4,0.9,0.5),(255,170,60)))
+    # -- MVDC TRUNK: generator -> 3300 V busbar ---------------------------------
+    dc_m=[]
+    dc_m.append(_pipe((_eng(0.0),_eng(0.0),gz+gt),
+                      (_eng(0.0),_eng(0.0),gz+gt+_eng(0.5)),
+                      _eng(DIMS["dcbus_cable_d_m"]/2),(255,170,40)))
+    v,f=_box(_eng(0.0),_eng(0.0),gz+gt+_eng(0.6),_eng(DIMS["dcbus_trunk_w_m"]),
+             _eng(0.10),_eng(0.10))
+    dc_m.append(Mesh(v,f,(255,170,40),name="MVDC trunk",group="dcbus"))
+    parts.append(Part("dcbus","MVDC BUSBAR TRUNK",dc_m,
+        ["3300 V DC bus -> pods + battery + electrolyser",
+         "%d parallel %.0f mm2 copper feeders"%(BUS["trunks"],BUS["wire_mm2"]),
+         "SUB: %.0f m run, %.3f mOhm total -> I2R copper loss modelled"%(
+             BUS["wire_len_m"],BUS_R_OHM*1000),
+         "SUB: SiC inverters (%.1f%% eff) on the pod feeds"%(BUS["inverter_eff"]*100),
+         "SUB: %.0f A bus limit, breaker-flagged in telemetry"%BUS["bus_a_max"],
+         "MAT: tinned copper, XLPE insulation, water-cooled busbar",
+         "TECH: MVDC trunk, bus_loss tracked in the energy tab",
+         "SIM: amps = P/V; loss = I2R across %.3f mOhm"%(BUS_R_OHM*1000)],
+        17,(0.0,0.0,-0.9),(255,170,40)))
     return parts
 
 def _hull(sections):
@@ -3885,7 +4703,7 @@ def build_ship_parts():
     # providing comfortable housing for the 75-person crew.  The top deck
     # has a grass lawn in the 60% of area not shaded by the solar roof.
     hab=[]; hbl=scs(DIMS["habitat_len_m"]); hbw=scs(DIMS["habitat_w_m"])
-    hbf=DIMS["habitat_floors"]; hfh=scs(DIMS["habitat_floor_h_m"])
+    hfh=scs(DIMS["habitat_floor_h_m"])
     hab_elev=scs(HABITAT["elevation_m"])  # height above deck
     hab_x=scs(-30); hab_z=scs(20)  # positioned port-side, mid-ship
     # Support columns (8 columns elevating the habitat)
@@ -4382,7 +5200,7 @@ def build_ship_parts():
          "SIM: 20 years zero-failure, 100%% batch traceability"],
         21,(0.8,0.5,0.2),C_DNA_LAB))
     # --- INNOVATION FEATURES ---
-    C_OTEC=(60,140,180); C_KITE=(200,180,100); C_AUV=(80,180,160); C_RAFT=(180,160,220)
+    C_OTEC=(60,140,180); C_AUV=(80,180,160); C_RAFT=(180,160,220)
     C_ANT=(200,200,210); C_AIRLUBE=(100,200,255)
     # OTEC cold-water pipe (long pipe descending from hull into deep water)
     otec=[]; otec_pipe_r=scs(0.8); otec_pipe_l=scs(60.0)
@@ -4664,7 +5482,6 @@ def build_ship_parts():
         me.append(sp)
     # Nutrient pipes (from mixer tanks down through hull to outlets)
     n_pipes=DIMS["enrichment_pipes"]; pipe_d=scs(DIMS["enrichment_pipe_d_m"]/2)
-    pipe_l=scs(DIMS["enrichment_pipe_len_m"])
     for i in range(n_pipes):
         xc=-scs(12.0)+(i+0.5)*scs(24.0/n_pipes)
         # Pipe from deck down through hull
@@ -5087,6 +5904,1043 @@ def build_hatchery_parts():
         6,(0.2,0.8,0.3),C_ALGAE))
     return parts
 
+
+# ---------------------------------------------------------------------------
+# DRONE SHRIMP-HERDING SPREAD -- the "fish dog" system (FARM tab)
+# ---------------------------------------------------------------------------
+# Scene convention: y is up, the water surface is y=0, the vessel's stern
+# gantry sits at -x and the smart trawl net streams at +x.  All numbers are
+# real metres from HERDING / HERD_NET and rendered at FARM_DISP.
+
+def _herd_drone_meshes(body_col):
+    """One 'fish dog' herding drone, local frame: nose at +z, dorsal up at +y.
+
+    Detailed build: pressure hull, faceted sonar dome, gimbal camera eye,
+    dorsal LED ring + herd bar, ventral acoustic horn, 3 ducted thrusters,
+    side-scan fins, e-field whiskers, umbilical socket."""
+    r=HERDING["drone_dia_m"]/2.0; L=HERDING["drone_len_m"]
+    m=[]
+    # pressure hull (torpedo)
+    v,f=_solid_cylinder(r,-L*0.5,L*0.38,seg=14)
+    m.append(Mesh(v,f,body_col,name="pressure hull"))
+    # nose sonar dome (forward-looking + side-scan) -- tapered cap
+    v,f=_solid_cylinder(r*0.72,L*0.38,L*0.50,seg=12)
+    m.append(Mesh(v,f,C_DRONE_NOSE,name="sonar dome"))
+    v,f=_solid_cylinder(r*0.38,L*0.50,L*0.58,seg=10)
+    m.append(Mesh(v,f,_mix(C_DRONE_NOSE,body_col,0.3),name="dome tip"))
+    # gimbal camera eye under the dome (sensor suite)
+    v,f=_solid_cylinder(r*0.22,-r*0.10,r*0.10,seg=8)
+    em=Mesh(v,f,(30,40,55),name="camera eye")
+    em.pivot=np.array([0.0,-r*0.55,L*0.40]); m.append(em)
+    # dorsal LED herding ring (470 nm blue -- the light cue, wraps the hull)
+    v,f=_annulus_cylinder(r*1.16,r*0.98,-r*0.10,r*0.10,seg=14)
+    lr=Mesh(v,f,C_LED,name="LED herd ring")
+    lr.pivot=np.array([0.0,0.0,L*0.10]); m.append(lr)
+    # dorsal LED herd bar
+    v,f=_box(0.0,r*1.15,-0.02,r*0.30,r*0.22,L*0.62)
+    m.append(Mesh(v,f,C_PING,name="LED herd bar"))
+    # ventral acoustic projector horn (20-100 Hz near-field) -- belly pod
+    v,f=_solid_cylinder(r*0.30,-r*0.9,r*0.9,seg=8)
+    hm=Mesh(v,f,_mix(body_col,(0,0,0),0.35),name="acoustic horn")
+    hm.pivot=np.array([0.0,-r*1.15,L*0.12]); m.append(hm)
+    # three stern thruster ducts (annulus shrouds, axis = drone axis)
+    for s,yy in ((-1,0.0),(1,0.0),(0.0,-1.0)):
+        v,f=_annulus_cylinder(r*0.55,r*0.42,-L*0.56,-L*0.44,seg=10)
+        dm=Mesh(v,f,_mix(body_col,(0,0,0),0.25),name="thruster duct")
+        dm.pivot=np.array([s*r*0.9,yy*r*0.9,0.0]); m.append(dm)
+    # side-scan fins (hydroplane control surfaces)
+    for s in (-1,1):
+        v,f=_box(s*r*1.05,0.0,-L*0.30,r*0.9,r*0.10,L*0.34)
+        fm=Mesh(v,f,_mix(body_col,(0,0,0),0.15),name="scan fin"); m.append(fm)
+    # tail cone behind the ducts
+    v,f=_solid_cylinder(r*0.55,-L*0.62,-L*0.56,seg=10)
+    v2,f2=_solid_cylinder(r*0.18,-L*0.70,-L*0.62,seg=8)
+    m.append(Mesh(v,f,_mix(body_col,(0,0,0),0.4),name="tail cone"))
+    m.append(Mesh(v2,f2,C_DRONE_NOSE,name="tail tip"))
+    # e-field whisker electrodes (two thin prongs aft)
+    for s in (-1,1):
+        m.append(_pipe((s*r*0.5,0.0,-L*0.50),(s*r*0.9,0.0,-L*0.78),r*0.06,C_EFIELD))
+    # umbilical socket on the spine (tethered drones only, visual)
+    v,f=_box(0.0,r*0.9,-L*0.30,r*0.5,r*0.3,r*0.5)
+    m.append(Mesh(v,f,C_UMBIL,name="umbilical socket"))
+    return m
+
+def _drone_prop_mesh():
+    """Crossed prop blades centred at origin -- spins about local z (the axis)."""
+    r=HERDING["drone_dia_m"]/2.0
+    v,f=_box(0.0,0.0,0.0,r*1.15,r*0.14,r*0.10)
+    b1=Mesh(v,f,C_DRONE_HI,name="prop blades",spin=1.0,group="droneprop")
+    v,f=_box(0.0,0.0,0.0,r*0.14,r*1.15,r*0.10)
+    b2=Mesh(v,f,C_DRONE_HI,name="prop blades",spin=1.0,group="droneprop")
+    return [b1,b2]
+
+def _farm_drone_at(meshes,col,pos,heading,anim_kind,anim_i,lp_scale=1.0,scale=FARM_DISP):
+    """Clone a drone-mesh kit at a scene position; tag every mesh with its
+    animation record so _update_farm_anim can re-pose it each frame.
+
+    pos is in REAL metres (scene frame, pre-_farm scale).  Each mesh's local
+    pivot (metres, pre-scale) is stored in anim['lp'] -- the frame update
+    rotates it by the live heading and adds the live position."""
+    out=[]
+    for mm in meshes:
+        nm=Mesh(mm.verts.copy()*scale,mm.faces,mm.color,name=mm.name,
+                spin=mm.spin,group=mm.group)
+        local_piv=mm.pivot.copy() if hasattr(mm,"pivot") else np.zeros(3)
+        lp=(rot_y(heading)@local_piv.reshape(3,1)).ravel()
+        nm.pivot=np.array([_farm(pos[0]),_farm(pos[1]),_farm(pos[2])])+lp*scale
+        nm.tilt=(0,heading)
+        nm.anim={"kind":anim_kind,"i":anim_i,"lp":local_piv.copy()}
+        out.append(nm)
+    return out
+
+def build_farm_parts(pattern="funnel"):
+    """The stern drone-herding spread, to scale.
+
+    The multi-thread reel on the gantry drops the 'fish dog' drones through
+    the PTFE chutes; they swim a stimulus fence that converges the shrimp
+    school onto the smart trawl.  Every number comes from HERDING/HERD_NET.
+    The drone swarm, bubble column, shrimp school and AUV scouts carry
+    anim tags -- App._update_farm_anim re-poses them every frame through
+    the full DEPLOY->RECOVER cycle.
+    """
+    parts=[]; rnd=random.Random(20261110)
+    N_SHOW=24                     # deployed drones rendered (of 48 tethered)
+
+    # =========================================================================
+    # 0. SEA ENVIRONMENT -- waterline frame + seabed + current markers
+    # =========================================================================
+    env=[]
+    # waterline frame (suggests the surface without occluding it)
+    x0,x1=_farm(-30.0),_farm(48.0); z0,z1=_farm(-26.0),_farm(26.0)
+    for a,b in (((x0,0.0,z0),(x1,0.0,z0)),((x0,0.0,z1),(x1,0.0,z1)),
+                ((x0,0.0,z0),(x0,0.0,z1)),((x1,0.0,z0),(x1,0.0,z1))):
+        env.append(_pipe(a,b,_farm(0.10),C_WATERLINE))
+    # light surface grid lines (every 10 m) so the surface reads as a plane
+    for gx in range(-20,50,10):
+        env.append(_pipe((_farm(gx),0.0,z0),(_farm(gx),0.0,z1),_farm(0.03),
+                         _mix(C_WATERLINE,C_PANEL,0.55)))
+    for gz in range(-20,30,10):
+        env.append(_pipe((x0,0.0,_farm(gz)),(x1,0.0,_farm(gz)),_farm(0.03),
+                         _mix(C_WATERLINE,C_PANEL,0.55)))
+    # translucent water-surface slab (drawn in the alpha pass)
+    v,f=_box(_farm(9.0),_farm(-0.06),0.0,_farm(84.0),_farm(0.12),_farm(56.0))
+    env.append(Mesh(v,f,_mix(C_WATERLINE,(180,230,255),0.5),name="water surface",
+                    spin=0.0,alpha=0.14))
+    # seabed plate at -19 m
+    v,f=_box(_farm(9.0),_farm(-19.5),0.0,_farm(84.0),_farm(0.8),_farm(56.0))
+    env.append(_static(v,f,C_SEABED,"seabed"))
+    # seabed texture ribs
+    for i in range(9):
+        bx=_farm(-24.0+i*8.0)
+        v,f=_box(bx,_farm(-19.0),_farm(-6+((i*37)%12)),_farm(3.0),_farm(0.4),_farm(6.0))
+        env.append(_static(v,f,_mix(C_SEABED,(90,80,50),0.35),"sand ridge"))
+    # current-flow markers (thin arrows along the bottom)
+    for i in range(6):
+        cx=_farm(-18.0+i*9.0); cy=_farm(-17.5)
+        env.append(_pipe((cx,cy,_farm(-24.0)),(cx+_farm(4.0),cy,_farm(-24.0)),
+                         _farm(0.05),_mix(C_WATERLINE,C_SEABED,0.3)))
+    parts.append(Part("env","SEA ENVIRONMENT",env,
+        ["The operating theatre: surface frame at y=0, seabed at -19 m,",
+         "mid-water herding corridor in between.",
+         "Working depth: %.0f m trawl / %.0f m drone rating"%(
+            HERD_NET["trawl_depth_m"],HERDING["drone_depth_m"]),
+         "SUB: waterline grid every 10 m for spatial reference",
+         "SUB: seabed relief + current-flow markers",
+         "SIM: drones hold station in 1.5 kn cross-current (3x thrust margin)"],
+        0,(0,0,-0.6),C_WATERLINE))
+
+    # =========================================================================
+    # 1. STERN GANTRY -- the A-frame the reel hangs off
+    # =========================================================================
+    gantry=[]; gx=_farm(-22.0)
+    # stern work-deck edge the gantry stands on
+    v,f=_box(gx-_farm(4.0),_farm(3.0),0.0,_farm(10.0),_farm(6.0),_farm(26.0))
+    gantry.append(_static(v,f,_mix(C_GANTRY,C_PANEL,0.35),"stern work deck"))
+    # A-frame legs (port + starboard), feet on deck to apex at +13 m
+    for s in (-1,1):
+        gantry.append(_pipe((gx-_farm(2.0),_farm(6.0),s*_farm(9.0)),
+                            (gx+_farm(1.0),_farm(13.0),s*_farm(4.0)),
+                            _farm(0.45),C_GANTRY))
+        # hydraulic tilt rams (fold for storm)
+        gantry.append(_pipe((gx-_farm(4.5),_farm(6.2),s*_farm(8.0)),
+                            (gx-_farm(0.6),_farm(10.5),s*_farm(4.6)),
+                            _farm(0.22),_mix(C_GANTRY,(200,200,200),0.35)))
+    # crossbeam the reel hangs off
+    gantry.append(_pipe((gx+_farm(1.0),_farm(13.0),_farm(-6.0)),
+                        (gx+_farm(1.0),_farm(13.0),_farm(6.0)),
+                        _farm(0.5),C_GANTRY))
+    # fairlead boom reaching out over the water
+    gantry.append(_pipe((gx+_farm(1.0),_farm(13.0),0.0),
+                        (gx+_farm(8.0),_farm(5.0),0.0),_farm(0.35),C_GANTRY))
+    # deck railings + floodlight posts
+    for s in (-1,1):
+        gantry.append(_pipe((gx-_farm(8.5),_farm(6.0),s*_farm(12.5)),
+                            (gx-_farm(8.5),_farm(7.2),s*_farm(12.5)),
+                            _farm(0.06),C_TEXT_DIM))
+        gantry.append(_pipe((gx-_farm(8.5),_farm(7.2),s*_farm(12.5)),
+                            (gx-_farm(8.5),_farm(7.2),s*_farm(8.0)),
+                            _farm(0.04),C_TEXT_DIM))
+    # knuckle crane on the work deck (net handling / parts lift)
+    crx=gx-_farm(6.5); cry=_farm(6.0); crz=_farm(-10.5)
+    gantry.append(_pipe((crx,cry,crz),(crx,cry+_farm(3.0),crz),_farm(0.28),_mix(C_GANTRY,(220,180,80),0.4)))
+    gantry.append(_pipe((crx,cry+_farm(3.0),crz),(crx+_farm(5.5),cry+_farm(5.0),crz+_farm(1.5)),_farm(0.20),_mix(C_GANTRY,(220,180,80),0.4)))
+    gantry.append(_pipe((crx+_farm(5.5),cry+_farm(5.0),crz+_farm(1.5)),
+                        (crx+_farm(5.5),cry+_farm(2.2),crz+_farm(1.5)),_farm(0.03),C_UMBIL))
+    v,f=_box(crx+_farm(5.5),cry+_farm(2.0),crz+_farm(1.5),_farm(0.5),_farm(0.4),_farm(0.5))
+    gantry.append(_static(v,f,(220,180,80),"crane hook"))
+    # fairlead roller cluster at the boom tip (umbilicals ride here)
+    for i in range(4):
+        frx=gx+_farm(6.4+i*0.5); fry=_farm(5.4-i*0.1)
+        v,f=_solid_cylinder(_farm(0.16),-_farm(0.30),_farm(0.30),seg=8)
+        rm=Mesh(v,f,_mix(C_REEL,C_TEXT_DIM,0.3),name="fairlead roller")
+        rm.pivot=np.array([frx,fry,_farm(-1.2+i*0.8)]); rm.tilt=(math.pi/2,0); gantry.append(rm)
+    # amber aviation beacon on the apex
+    v,f=_solid_cylinder(_farm(0.10),-_farm(0.08),_farm(0.08),seg=8)
+    bm=Mesh(v,f,C_WARN,name="apex beacon")
+    bm.pivot=np.array([gx+_farm(1.0),_farm(13.3),0.0]); gantry.append(bm)
+    parts.append(Part("gantry","STERN GANTRY + WORK DECK",gantry,
+        ["A-frame + fairlead boom carries the herding reel over the stern.",
+         "Hydraulic tilt rams fold the frame flat inside the storm line.",
+         "SUB: 8 m deck edge, drip-tray drained, anti-slip coating",
+         "SUB: knuckle crane for net handling + parts lift",
+         "SUB: fold-flat in <10 min for STORM mode (verified Cat 5)",
+         "MAT: S690 high-strength steel, marine-epoxy coated",
+         "TECH: load-pin monitored, 60 t safe working load",
+         "SIM: 20 years zero-failure, folded through every hurricane"],
+        1,(0,0.9,0),C_GANTRY))
+
+    # =========================================================================
+    # 2. MULTI-THREAD HERDING REEL -- 6 powered drums x 8 umbilical lines
+    # =========================================================================
+    reel=[]; rx=gx+_farm(1.0); ry=_farm(12.4)
+    for d in range(HERDING["reel_drums"]):
+        dz=_farm(-7.5+d*3.0)
+        # drum barrel (axis along the beam -> spin about local z, no tilt)
+        v,f=_solid_cylinder(_farm(0.65),-_farm(1.0),_farm(1.0),seg=16)
+        dm=Mesh(v,f,C_REEL,name="reel drum %d"%(d+1),spin=1.0,group="genring")
+        dm.pivot=np.array([rx,ry,dz]); reel.append(dm)
+        # flange plates
+        for off in (-1.05,1.05):
+            v,f=_solid_cylinder(_farm(0.78),-_farm(0.08),_farm(0.08),seg=14)
+            fm=Mesh(v,f,_mix(C_REEL,C_REEL_BAND,0.4),name="drum flange",group="genring")
+            fm.pivot=np.array([rx,ry,dz+_farm(off)]); reel.append(fm)
+        # wound umbilical grooves (annulus wraps)
+        for w in range(HERDING["lines_per_drum"]):
+            wr=_farm(0.30+w*0.045)
+            v,f=_annulus_cylinder(wr+_farm(0.03),wr,-_farm(0.9),_farm(0.9),seg=12)
+            um=Mesh(v,f,_mix(C_UMBIL,C_REEL_BAND,0.15+w*0.06),name="umbilical wrap")
+            um.pivot=np.array([rx,ry,dz]); reel.append(um)
+        # failsafe brake band around each drum rim
+        v,f=_annulus_cylinder(_farm(0.82),_farm(0.78),-_farm(1.12),_farm(-0.84),seg=16)
+        bb=Mesh(v,f,_mix(C_WARN,C_REEL,0.45),name="brake band")
+        bb.pivot=np.array([rx,ry,dz]); reel.append(bb)
+        # per-drum servo motor pod on the beam
+        v,f=_solid_cylinder(_farm(0.30),-_farm(0.4),_farm(0.4),seg=10)
+        sv=Mesh(v,f,_mix(C_REEL,(120,60,40),0.5),name="drum servo")
+        sv.pivot=np.array([rx,ry+_farm(0.95),dz]); sv.tilt=(math.pi/2,0); reel.append(sv)
+    # reel drive motor + level-wind carriage
+    v,f=_solid_cylinder(_farm(0.5),-_farm(0.6),_farm(0.6),seg=12)
+    mt=Mesh(v,f,_mix(C_REEL,(120,60,40),0.5),name="reel drive motor")
+    mt.pivot=np.array([rx,ry,_farm(10.6)]); reel.append(mt)
+    reel.append(_pipe((rx,ry-_farm(1.4),_farm(-9.0)),(rx,ry-_farm(1.4),_farm(9.0)),
+                      _farm(0.12),C_REEL_BAND))
+    # festoon power loop under the beam
+    for i in range(6):
+        fz=_farm(-7.5+i*3.0)
+        reel.append(_pipe((rx,ry-_farm(0.6),fz),(rx,ry-_farm(1.35),fz+_farm(1.0)),
+                          _farm(0.035),C_UMBIL))
+    parts.append(Part("reel","MULTI-THREAD HERDING REEL",reel,
+        ["%d powered drums x %d umbilical grooves = %d tethered drone lines"%(
+            HERDING["reel_drums"],HERDING["lines_per_drum"],HERDING["tethered_drones"]),
+         "Each line: power + fibre comms + 400 daN strength member.",
+         "SUB: level-wind carriage keeps wraps even across the drum",
+         "SUB: per-drum servo tension control (anti-snap in waves)",
+         "SUB: regenerative payout -- recovering drones re-spin the drum",
+         "MAT: 316L drums, Dyneema-core umbilicals, IP68 servo drives",
+         "TECH: full spread paid out in %.0f min, recovered in %.0f min"%(
+            HERDING["deploy_time_min"],HERDING["recover_time_min"]),
+         "SIM: 20 years zero-failure, 1 drum rebuild (predicted, scheduled)"],
+        2,(0,0.7,0.5),C_REEL))
+
+    # =========================================================================
+    # 3. DROP SYSTEM -- rotary magazine + PTFE drop chutes (the "drop design")
+    # =========================================================================
+    drop=[]; mx=gx-_farm(1.0); my=_farm(7.4); mz=_farm(9.5)
+    # rotary magazine disc (charged + racked spares, indexed by AI)
+    v,f=_annulus_cylinder(_farm(3.4),_farm(0.9),-_farm(0.35),_farm(0.35),seg=24)
+    md=Mesh(v,f,C_MAG,name="drone magazine",spin=1.0,group="genring")
+    md.pivot=np.array([mx,my,mz]); md.tilt=(math.pi/2,0); drop.append(md)
+    # hub + index motor + failsafe brake caliper
+    v,f=_solid_cylinder(_farm(0.7),-_farm(0.5),_farm(0.5),seg=14)
+    hb=Mesh(v,f,_mix(C_MAG,(0,0,0),0.25),name="magazine hub")
+    hb.pivot=np.array([mx,my,mz]); hb.tilt=(math.pi/2,0); drop.append(hb)
+    v,f=_box(mx-_farm(1.2),my-_farm(0.6),mz,_farm(1.1),_farm(0.9),_farm(1.1))
+    drop.append(_static(v,f,_mix(C_MAG,(120,60,40),0.5),"index motor"))
+    v,f=_box(mx+_farm(3.0),my+_farm(0.1),mz,_farm(0.5),_farm(0.7),_farm(0.4))
+    drop.append(_static(v,f,_mix(C_WARN,C_MAG,0.5),"failsafe brake"))
+    # 16 rack slots; 12 carry charged spares (of 64 in the magazine)
+    nslots=HERDING["magazine_slots"]
+    for i in range(nslots):
+        a=i*2*math.pi/nslots
+        cx=mx+_farm(2.6)*math.cos(a); cz=mz+_farm(2.6)*math.sin(a)
+        # slot cradle rail
+        v,f=_box(cx,my+_farm(0.30),cz,_farm(0.35),_farm(0.22),_farm(1.3))
+        rm=Mesh(v,f,_mix(C_MAG,C_TEXT_DIM,0.25),name="rack slot"); rm.tilt=(0,a); drop.append(rm)
+        if i%4!=3:   # 12 of 16 slots occupied
+            for mm in _herd_drone_meshes(_mix(C_DRONE,(255,255,255),0.1)):
+                mm=Mesh(mm.verts.copy()*FARM_DISP,mm.faces,mm.color,name="racked drone")
+                mm.pivot=np.array([cx,my+_farm(0.62),cz]); mm.tilt=(0,a); drop.append(mm)
+    # charge ring (inductive pads under each rack slot)
+    v,f=_annulus_cylinder(_farm(3.0),_farm(2.2),-_farm(0.10),_farm(0.02),seg=20)
+    cr=Mesh(v,f,_mix(C_H2,(255,255,255),0.2),name="inductive charge ring")
+    cr.pivot=np.array([mx,my-_farm(0.45),mz]); cr.tilt=(math.pi/2,0); drop.append(cr)
+    # charge contact pads under every slot
+    for i in range(nslots):
+        a=i*2*math.pi/nslots
+        cx=mx+_farm(2.6)*math.cos(a); cz=mz+_farm(2.6)*math.sin(a)
+        v,f=_box(cx,my-_farm(0.12),cz,_farm(0.3),_farm(0.08),_farm(0.5))
+        pad=Mesh(v,f,_mix(C_H2,(0,0,0),0.3),name="charge pad"); pad.tilt=(0,a); drop.append(pad)
+    # four PTFE drop chutes angling from the magazine to the water.
+    # Each chute: outer pipe + bright PTFE liner + splash-damp exit cone +
+    # freshwater rinse jet stub (kills biofilm on recovery).
+    for i in range(HERDING["drop_chutes"]):
+        s=-1.0 if i<2 else 1.0; spread=_farm(4.0+(i%2)*4.0)
+        top=(mx+_farm(1.5),my-_farm(0.5),mz+s*spread*0.4)
+        bot=(gx+_farm(7.0),_farm(0.4),s*spread)
+        drop.append(_pipe(top,bot,_farm(0.55),C_CHUTE))
+        drop.append(_pipe((top[0]+_farm(0.6),top[1]-_farm(0.2),top[2]),
+                          (bot[0]+_farm(0.6),bot[1]-_farm(0.2),bot[2]),
+                          _farm(0.10),_mix(C_CHUTE,(255,255,255),0.3)))
+        # splash-damped exit cone (flared annulus at the waterline)
+        v,f=_annulus_cylinder(_farm(0.95),_farm(0.55),-_farm(0.5),_farm(0.1),seg=12)
+        sc=Mesh(v,f,_mix(C_CHUTE,(255,255,255),0.15),name="splash-damp cone")
+        sc.pivot=np.array([bot[0],bot[1]-_farm(0.2),bot[2]]); sc.tilt=(0.35,0); drop.append(sc)
+        # rinse jet stub at the chute throat
+        drop.append(_pipe((top[0]-_farm(0.4),top[1]+_farm(0.1),top[2]),
+                          (top[0]-_farm(0.1),top[1]-_farm(0.4),top[2]),
+                          _farm(0.06),_mix(C_H2,(255,255,255),0.3)))
+    # recovery cradle funnel at the waterline + conveyor back to the magazine
+    v,f=_annulus_cylinder(_farm(2.2),_farm(1.8),-_farm(0.3),_farm(0.3),seg=16)
+    rc=Mesh(v,f,_mix(C_CRADLE,(0,0,0),0.15),name="recovery cradle")
+    rc.pivot=np.array([gx+_farm(7.5),_farm(0.6),0.0]); rc.tilt=(math.pi/2,0); drop.append(rc)
+    # conveyor rollers rising from the cradle to the magazine rim
+    for i in range(6):
+        cxx=gx+_farm(7.0)-i*_farm(0.9); cyy=_farm(0.9)+i*_farm(1.1)
+        v,f=_solid_cylinder(_farm(0.14),-_farm(0.9),_farm(0.9),seg=8)
+        rl=Mesh(v,f,_mix(C_CRADLE,C_TEXT_DIM,0.3),name="cradle roller")
+        rl.pivot=np.array([cxx,cyy,_farm(-1.5+i*0.5)]); rl.tilt=(0,math.pi/2); drop.append(rl)
+    drop.append(_pipe((gx+_farm(7.5),_farm(0.8),0.0),(mx+_farm(2.0),my-_farm(0.8),mz-_farm(2.0)),
+                      _farm(0.10),C_CRADLE))
+    parts.append(Part("drop","DRONE DROP CAROUSEL + CHUTES",drop,
+        ["THE DROP DESIGN -- how 48 fish dogs hit the water in %.0f min:"%herd_deploy_min(),
+         "%d-drone rotary magazine (%d-slot rim shown) indexes charged"%(
+            HERDING["magazine_drones"],HERDING["magazine_slots"]),
+         "drones onto %d PTFE-lined chutes at %.0f deg. Gravity launches;"%(
+            HERDING["drop_chutes"],HERDING["chute_angle_deg"]),
+         "the splash-damp cone bleeds air so entry is <0.3 m splash.",
+         "Umbilical auto-couples on the way past the reel fairlead.",
+         "RECOVERY: surface-skimming cradle funnel scoops drones at",
+         "%.0f/min, conveyor returns them to the carousel; inductive"%HERDING["recover_per_min"],
+         "pads recharge in %.0f min while a freshwater rinse kills biofilm."%HERDING["charge_min"],
+         "DROP SEQUENCE: index -> chute -> splash-damp -> power-on -> dive",
+         "SUB: rotary magazine (AI-indexed, failsafe brake)",
+         "SUB: %d PTFE drop chutes, %.0f deg, splash-damped exit"%(
+            HERDING["drop_chutes"],HERDING["chute_angle_deg"]),
+         "SUB: inductive charge ring + desalination rinse",
+         "SUB: dead-drone umbilical winch-in (no swimmer ever needed)",
+         "MAT: HDPE carousel, PTFE chutes, 316L cradle + conveyor",
+         "TECH: %.0f drops/min -- full spread of %d in %.0f min"%(
+            HERDING["drop_per_min"],HERDING["tethered_drones"],herd_deploy_min()),
+         "SIM: 20 years zero-failure, magazine MTBF >10,000 cycles"],
+        3,(0,0.5,0.9),C_CHUTE))
+
+    # =========================================================================
+    # 4. UMBILICALS -- power + fibre tethers, reel -> fairlead -> each drone
+    # =========================================================================
+    umb=[]; fairlead=(gx+_farm(8.0),_farm(5.0),0.0)
+    for i in range(16):
+        a=i/15.0
+        fx,fy,fz,_=herd_fence_slot(pattern,i,16)   # same slots as the swarm
+        dx,dy,dz=_farm(fx),_farm(fy),_farm(fz)
+        umb.append(_pipe((rx,ry-_farm(0.8),_farm(-9.0+18.0*a)),fairlead,
+                         _farm(0.045),C_UMBIL))
+        umb.append(_pipe(fairlead,(dx,dy,dz),_farm(0.045),_mix(C_UMBIL,C_WATERLINE,0.2)))
+    parts.append(Part("umbilical","POWER-COMMS UMBILICALS",umb,
+        ["Dyneema-core umbilicals: 400 daN strength member,",
+         "copper power pair + single-mode fibre per drone.",
+         "Tethered drones never run out of charge -- the 12 h battery",
+         "is a backup for a snapped line, not the mission plan.",
+         "SUB: servo tension control absorbs wave snap-load",
+         "SUB: fibre carries sonar video + swarm mesh (acoustic backup)",
+         "MAT: Dyneema core, TPU jacket, wet-mate connectors",
+         "SIM: 2 line snags per year, both winched home dead-weight"],
+        4,(-0.6,0.3,0),C_UMBIL))
+
+    # =========================================================================
+    # 5. THE FISH-DOG SWARM -- 24 of 48 tethered shown, animated drop->fence
+    # =========================================================================
+    swarm=[]; drone_positions=[]
+    for i in range(N_SHOW):
+        a=i/(N_SHOW-1)
+        fx,fy,fz,heading=herd_fence_slot(pattern,i,N_SHOW)
+        dx,dy,dz=_farm(fx),_farm(fy),_farm(fz)
+        drone_positions.append((dx,dy,dz,heading))
+        col=_mix(C_DRONE,C_DRONE_HI,0.2+0.5*abs(a-0.5)*2)
+        swarm+=_farm_drone_at(_herd_drone_meshes(col),col,(fx,fy,fz),
+                              heading,"drone",i)
+        # spinning prop at the tail (local -z end)
+        for pm in _drone_prop_mesh():
+            pm=Mesh(pm.verts.copy()*FARM_DISP,pm.faces,pm.color,name="prop blades",
+                    spin=1.0,group="droneprop",
+                    anim={"kind":"drone","i":i,"lp":np.array([0.0,0.0,-0.52])})
+            tail=np.array([dx,dy,dz])-np.array([math.sin(heading),0.0,math.cos(heading)])*_farm(0.52)
+            pm.pivot=tail; pm.tilt=(0,heading); swarm.append(pm)
+    parts.append(Part("drones","HERDING DRONE SWARM (fish dogs)",swarm,
+        ["%d tethered 'fish dog' drones + %d free AUV scouts"%(
+            HERDING["tethered_drones"],HERDING["free_auvs"]),
+         "-- shown: %d of the tethered spread cycling drop->fence->recover."%N_SHOW,
+         "Each drone: %.2f m torpedo, %.0f kg, %.0f kn, rated %.0f m."%(
+            HERDING["drone_len_m"],HERDING["drone_mass_kg"],
+            HERDING["drone_speed_kn"],HERDING["drone_depth_m"]),
+         "SENSORY AI: %s"%HERDING["sensor_suite"],
+         "  %s -- the swarm relearns the herding policy every set."%HERDING["ai_model"],
+         "THE HERDING STIMULI -- a fence shrimp will not cross:",
+         "  acoustic horn  %.0f-%.0f Hz near-field pressure wave"%(
+            HERDING["acoustic_lo_hz"],HERDING["acoustic_hi_hz"]),
+         "  LED ring+bar   %.0f nm blue light/shadow cue"%HERDING["led_nm"],
+         "  bubble curtain rising micro-bubble wall between drones",
+         "  e-field        %.1f V/m pulsed -- startles, never stuns"%HERDING["efield_v_per_m"],
+         "SUB: 3 ducted stern thrusters + nose sonar dome (%.0f m)"%HERDING["sonar_range_m"],
+         "SUB: umbilical socket -- power + fibre, acoustic backup",
+         "SUB: scan fins, gimbal camera eye, e-field tail whiskers",
+         "FORMATIONS (AI corridor library): wall / funnel / arc / sweep",
+         "Fence width %.0f m -> net mouth %.0f m (%.0f:1 funnel)"%(
+            HERDING["spread_m"],HERDING["net_mouth_m"],herd_funnel_ratio()),
+         "MAT: 316L hull, synthetic-rubber damping, IP68 thrusters",
+         "TECH: ML herding -- learns each trip, %.0f%% delivery efficiency"%HERDING["herd_eff_pct"],
+         "SIM: 20 years zero-failure, drones replaced on attrition schedule"],
+        5,(0.3,-0.4,0.6),C_DRONE))
+
+    # =========================================================================
+    # 6. BUBBLE CURTAIN -- the moving wall between the drones
+    # =========================================================================
+    bub=[]
+    bx=_farm(-8.0); by=_farm(-11.5)
+    # emitter manifold: perforated pipe spanning the fence rear
+    bub.append(_pipe((bx,by,_farm(-18.0)),(bx,by,_farm(18.0)),_farm(0.15),C_CHUTE))
+    # deck compressor house feeding the manifold
+    v,f=_box(bx-_farm(4.0),_farm(2.0),_farm(-18.0),_farm(3.0),_farm(2.5),_farm(3.0))
+    bub.append(_static(v,f,_mix(C_CHUTE,(0,0,0),0.2),"bubble compressor"))
+    bub.append(_pipe((bx-_farm(4.0),_farm(2.0),_farm(-18.0)),(bx,by,_farm(-18.0)),
+                     _farm(0.10),C_CHUTE))
+    for i in range(9):
+        bz=_farm(-16.0+i*4.0)
+        # diffuser stone
+        v,f=_box(bx,by,bz,_farm(0.4),_farm(0.25),_farm(0.4))
+        bub.append(_static(v,f,_mix(C_CHUTE,(0,0,0),0.3),"diffuser stone"))
+        # rising micro-bubble column -- animated alpha droplets
+        for k in range(6):
+            rr=_farm(0.12+0.04*k)
+            v,f=_solid_cylinder(rr,-_farm(0.35),_farm(0.35),seg=6)
+            bm=Mesh(v,f,_mix(C_BUBBLE,(255,255,255),0.15+0.08*k),name="bubbles",
+                    alpha=0.55,
+                    anim={"kind":"bubble","p0":np.array([bx,by,bz]),
+                          "rise":_farm(11.0),"rate":rnd.uniform(0.10,0.16),
+                          "phase":rnd.uniform(0.0,1.0)})
+            bub.append(bm)
+    parts.append(Part("bubble","BUBBLE CURTAIN LINE",bub,
+        ["A rising micro-bubble wall closes the gaps between drones --",
+         "shrimp see it as a shimmering wall of light and sound.",
+         "SUB: perforated manifold + 9 diffuser stones across the rear",
+         "SUB: bubbles shrink the passage until the only exit is the net",
+         "MAT: 316L manifold, ceramic diffuser stones",
+         "TECH: compressor-fed from deck; doubles as e-field carrier",
+         "SIM: curtain holds at 2.5 kn sweep, 80%% optical opacity"],
+        6,(-0.4,-0.4,-0.5),C_BUBBLE))
+
+    # =========================================================================
+    # 7. ACOUSTIC FIELD EMITTERS -- ping rings + e-field nodes
+    # =========================================================================
+    ping=[]
+    lead_idx=[2,N_SHOW//2,N_SHOW-3]
+    for i,di in enumerate(lead_idx):
+        dx,dy,dz,heading=drone_positions[di]
+        # broken ping ring in the plane perpendicular to the drone axis
+        rr=_farm(2.2+i*0.7)
+        v,f=_annulus_cylinder(rr+_farm(0.12),rr,-_farm(0.10),_farm(0.10),seg=24)
+        f=f[:int(len(f)*0.62)]   # open arc -> rotation is visible
+        pm=Mesh(v,f,_mix(C_PING,(255,255,255),0.15),name="acoustic ping",
+                spin=1.0,group="genring")
+        pm.pivot=np.array([dx,dy,dz]); pm.tilt=(0,heading); ping.append(pm)
+        # emitter node on the drone belly
+        v,f=_solid_cylinder(_farm(0.20),-_farm(0.15),_farm(0.15),seg=8)
+        em=Mesh(v,f,C_EFIELD,name="e-field node")
+        em.pivot=np.array([dx,dy-_farm(0.4),dz]); ping.append(em)
+        # translucent stimulus-cone aft of the drone (field of effect)
+        v,f=_annulus_cylinder(_farm(3.6+i*0.5),_farm(0.2),-_farm(4.5),-_farm(0.4),seg=14)
+        cn=Mesh(v,f,_mix(C_PING,(255,255,255),0.1),name="stimulus cone",
+                alpha=0.12,tilt=(0,heading))
+        cn.pivot=np.array([dx,dy,dz]); ping.append(cn)
+    parts.append(Part("ping","ACOUSTIC + E-FIELD EMITTERS",ping,
+        ["The fence is made of STIMULI, not steel:",
+         "  %.0f-%.0f Hz acoustic pings -- shrimp feel the pressure"%(
+            HERDING["acoustic_lo_hz"],HERDING["acoustic_hi_hz"]),
+         "     wave with their statocysts and dart away from it",
+         "  %.1f V/m pulsed e-field -- a startle field, never a stun"%HERDING["efield_v_per_m"],
+         "  %.0f nm LED -- a moving shadow line they turn from"%HERDING["led_nm"],
+         "SUB: rotating ping arcs mark each lead drone's field of effect",
+         "TECH: stimuli tuned per school state by the herding AI --",
+         "      too hard and they scatter, too soft and they leak",
+         "SIM: 95%% school delivery efficiency over 20 years"],
+        7,(0.2,-0.3,-0.8),C_PING))
+
+    # =========================================================================
+    # 8. SHRIMP SCHOOL -- the funnel cloud being walked to the net
+    # =========================================================================
+    school=[]
+    for i in range(128):
+        a=i/127.0
+        spread=(1.0-a)*9.0+1.2
+        sx=_farm(-2.0+24.0*a)+rnd.uniform(-1,1)*_farm(1.5)
+        sy=_farm(-8.5)+rnd.uniform(-1,1)*_farm(0.35)*spread
+        sz=rnd.uniform(-1,1)*_farm(spread)
+        v,f=_box(0.0,0.0,0.0,_farm(0.60),_farm(0.16),_farm(0.16))
+        v=np.asarray(v,float)@rot_y(rnd.uniform(-0.5,0.5)).T
+        sh=Mesh(v,f,_mix(C_SCHOOL,(255,220,180),a*0.5),name="shrimp",
+                anim={"kind":"school","p0":np.array([sx,sy,sz]),
+                      "phase":rnd.uniform(0.0,1.0),
+                      "rate":rnd.uniform(0.5,0.9)})
+        school.append(sh)
+    # density glow at the funnel throat
+    v,f=_solid_cylinder(_farm(1.1),-_farm(0.9),_farm(0.9),seg=10)
+    gm=Mesh(v,f,_mix(C_SCHOOL,(255,255,255),0.45),name="school throat")
+    gm.pivot=np.array([_farm(21.0),_farm(-8.5),0.0]); gm.tilt=(0,math.pi/2); school.append(gm)
+    parts.append(Part("school","SHRIMP SCHOOL (DNA-barcoded)",school,
+        ["A released, DNA-barcoded school -- ours, tracked since the chute.",
+         "The drone fence walks it: shrimp dart from each stimulus and",
+         "the school compacts %.0fx as it funnels toward the mouth."%HERDING["concentration_x"],
+         "SUB: school density estimated live by headrope + drone sonar",
+         "SUB: barcoded cohort confirmed by eDNA before the set",
+         "TECH: funnel geometry 400 m -> 16 m = 25:1 convergence",
+         "SIM: adults only -- juveniles slip the 28 mm mesh alive"],
+        8,(0,-0.3,1.0),C_SCHOOL))
+
+    # =========================================================================
+    # 9. SMART TRAWL NET -- mouth frame, TED/BRD, cod end
+    # =========================================================================
+    net=[]; nx=_farm(26.0); ny=_farm(-8.5)
+    hw=HERD_NET["mouth_w_m"]/2.0; hh=HERD_NET["mouth_h_m"]/2.0
+    # mouth hoop (rectangular frame)
+    mouth=[((nx,ny+_farm(hh),_farm(-hw)),(nx,ny+_farm(hh),_farm(hw))),
+           ((nx,ny-_farm(hh),_farm(-hw)),(nx,ny-_farm(hh),_farm(hw))),
+           ((nx,ny+_farm(hh),_farm(-hw)),(nx,ny-_farm(hh),_farm(-hw))),
+           ((nx,ny+_farm(hh),_farm(hw)),(nx,ny-_farm(hh),_farm(hw)))]
+    for a,b in mouth: net.append(_pipe(a,b,_farm(0.22),C_NET_FRAME))
+    # headrope floats + footrope weights
+    for i in range(6):
+        z=_farm(-hw+i*(2*hw/5.0))
+        v,f=_solid_cylinder(_farm(0.35),-_farm(0.2),_farm(0.2),seg=8)
+        fm=Mesh(v,f,C_BUOY,name="headrope float")
+        fm.pivot=np.array([nx,ny+_farm(hh+0.5),z]); fm.tilt=(math.pi/2,0); net.append(fm)
+        v,f=_solid_cylinder(_farm(0.25),-_farm(0.15),_farm(0.15),seg=8)
+        wm=Mesh(v,f,_mix(C_PANEL,(0,0,0),0.2),name="footrope weight")
+        wm.pivot=np.array([nx,ny-_farm(hh+0.4),z]); wm.tilt=(math.pi/2,0); net.append(wm)
+    # headrope omnidirectional sonar pod
+    v,f=_box(nx,ny+_farm(hh+0.9),0.0,_farm(1.4),_farm(0.5),_farm(0.9))
+    net.append(_static(v,f,C_PING,"headrope sonar"))
+    # otter boards (doors) spreading the mouth
+    for s in (-1,1):
+        v,f=_box(nx,ny,s*_farm(hw+2.2),_farm(0.4),_farm(5.5),_farm(3.4))
+        net.append(_static(v,f,_mix(C_GANTRY,(160,120,60),0.3),"otter board"))
+    # tapered net body: longitudinal rib lines + full mesh cross-grid to the
+    # cod end (four-panel knotless Dyneema)
+    cx=_farm(26.0+HERD_NET["net_len_m"])
+    # 8 longitudinal lines around the taper
+    for li in range(8):
+        th=li*math.pi/4.0
+        net.append(_pipe((nx,ny+_farm(hh)*math.sin(th),_farm(hw)*math.cos(th)),
+                         (cx,ny+_farm(1.4)*math.sin(th),_farm(1.4)*math.cos(th)),
+                         _farm(0.045),C_NET))
+    # cross-section rings: dense at the mouth, sparse aft
+    for t in (0.12,0.25,0.38,0.5,0.62,0.75,0.87):
+        mx2=nx+(cx-nx)*t; w2=_farm(hw)*(1.0-t)+_farm(1.4)*t; h2=_farm(hh)*(1.0-t)+_farm(1.4)*t
+        for a,b in (((mx2,ny+h2,-w2),(mx2,ny+h2,w2)),((mx2,ny-h2,-w2),(mx2,ny-h2,w2)),
+                    ((mx2,ny+h2,-w2),(mx2,ny-h2,-w2)),((mx2,ny+h2,w2),(mx2,ny-h2,w2))):
+            net.append(_pipe(a,b,_farm(0.028),_mix(C_NET,C_PANEL,0.3)))
+    # translucent net panels (the 4-panel body reads as netting, not smoke)
+    for t0,t1 in ((0.0,0.5),(0.5,1.0)):
+        mx2a=nx+(cx-nx)*t0; mx2b=nx+(cx-nx)*t1
+        w2a=_farm(hw)*(1.0-t0)+_farm(1.4)*t0; w2b=_farm(hw)*(1.0-t1)+_farm(1.4)*t1
+        h2a=_farm(hh)*(1.0-t0)+_farm(1.4)*t0; h2b=_farm(hh)*(1.0-t1)+_farm(1.4)*t1
+        for sgn in (-1,1):
+            # top + bottom sheets
+            vv=[(mx2a,ny+h2a,sgn*w2a),(mx2a,ny-h2a,sgn*w2a),
+                (mx2b,ny-h2b,sgn*w2b),(mx2b,ny+h2b,sgn*w2b)]
+            net.append(Mesh(vv,[(0,1,2,3)],C_NET,name="net panel",alpha=0.20))
+        # side sheets
+        vv=[(mx2a,ny+h2a,-w2a),(mx2a,ny+h2a,w2a),(mx2b,ny+h2b,w2b),(mx2b,ny+h2b,-w2b)]
+        net.append(Mesh(vv,[(0,1,2,3)],C_NET,name="net panel",alpha=0.20))
+        vv=[(mx2a,ny-h2a,-w2a),(mx2a,ny-h2a,w2a),(mx2b,ny-h2b,w2b),(mx2b,ny-h2b,-w2b)]
+        net.append(Mesh(vv,[(0,1,2,3)],C_NET,name="net panel",alpha=0.20))
+    # BRD escape hatch flap (top panel, mid-body)
+    bx2=nx+(cx-nx)*0.45
+    v,f=_box(bx2,ny+_farm(hh*0.62),0.0,_farm(1.8),_farm(0.08),_farm(2.4))
+    brd=Mesh(v,f,_mix(C_NET_FRAME,C_GOOD,0.4),name="BRD escape hatch"); brd.tilt=(0.35,0)
+    net.append(brd)
+    # TED grid (angled escape grate inside the mouth)
+    for i in range(5):
+        ty=ny-_farm(hh*0.8)+_farm(i*hh*0.36)
+        net.append(_pipe((nx+_farm(1.6),ty,_farm(-hw*0.8)),
+                         (nx+_farm(2.4),ty+_farm(0.5),_farm(hw*0.8)),
+                         _farm(0.05),_mix(C_NET_FRAME,C_WARN,0.4)))
+    # cod end (the 40 t bag)
+    v,f=_solid_cylinder(_farm(1.5),-_farm(2.6),_farm(2.6),seg=14)
+    ce=Mesh(v,f,C_COD,name="cod end")
+    ce.pivot=np.array([cx+_farm(2.6),ny,0.0]); ce.tilt=(0,math.pi/2); net.append(ce)
+    # cod-end lift line to the surface
+    net.append(_pipe((cx+_farm(2.6),ny+_farm(1.4),0.0),
+                     (cx+_farm(2.6),_farm(0.2),0.0),_farm(0.08),C_UMBIL))
+    parts.append(Part("net","SMART TRAWL NET (TED + BRD)",net,
+        ["%s -- %.0f x %.0f m mouth, %.0f m taper to the cod end"%(
+            HERD_NET["type"],HERD_NET["mouth_w_m"],HERD_NET["mouth_h_m"],
+            HERD_NET["net_len_m"]),
+         "AI-variable mesh %.0f-%.0f mm -- set to the released size class"%(
+            HERD_NET["mesh_min_mm"],HERD_NET["mesh_max_mm"]),
+         "TED + BRD: turtles and finfish walk out alive -> %.0f%% bycatch cut"%(
+            HERDING["bycatch_reduction_pct"]),
+         "Headrope sonar counts the school in, closes the set at %.0f t"%HERD_NET["cod_end_t"],
+         "SUB: otter boards, headrope floats, footrope weights",
+         "SUB: cod-end lift line pumps 40 t aboard in 12 min",
+         "MAT: Dyneema knotless netting, 316L frame, ceramic TED",
+         "TECH: %.0f t/set at %.0f kn sweep, %d sets/day"%(
+            HERDING["catch_t_per_set"],HERD_NET["trawl_speed_kn"],HERDING["sets_per_day"]),
+         "SIM: 20 years zero-failure, net rebuilt on AI wear forecast"],
+        9,(0.9,-0.2,0),C_NET))
+
+    # =========================================================================
+    # 10. FREE-SWIM SCOUTS + COMMS BUOY
+    # =========================================================================
+    scouts=[]
+    auv_centres=[(-2.0,-4.0,-12.0),(10.0,-5.0,12.0),(-10.0,-6.0,4.0),(16.0,-4.0,-8.0)]
+    for i,(ax,ay,az) in enumerate(auv_centres):
+        heading=math.pi/2.0+(0.4 if i%2==0 else -0.35)
+        for mm in _herd_drone_meshes(C_AUV_BODY):
+            local_piv=mm.pivot.copy() if hasattr(mm,"pivot") else np.zeros(3)
+            nm=Mesh(mm.verts.copy()*2.2*FARM_DISP,mm.faces,mm.color,name=mm.name,
+                    anim={"kind":"auv","i":i,"lp":local_piv*2.2,
+                          "c":np.array([ax,ay,az]),"r":6.0+i*1.5,
+                          "w":0.05+0.02*i,"ph":i*1.7})
+            lp=(rot_y(heading)@(local_piv*2.2).reshape(3,1)).ravel()
+            nm.pivot=np.array([_farm(ax),_farm(ay),_farm(az)])+lp*FARM_DISP
+            nm.tilt=(0,heading); scouts.append(nm)
+        tail=np.array([_farm(ax),_farm(ay),_farm(az)])-np.array([math.sin(heading),0,math.cos(heading)])*_farm(1.15)
+        for pm in _drone_prop_mesh():
+            pm=Mesh(pm.verts.copy()*2.0*FARM_DISP,pm.faces,pm.color,name="auv prop",
+                    spin=1.0,group="droneprop",
+                    anim={"kind":"auv","i":i,"lp":np.array([0.0,0.0,-1.15]),
+                          "c":np.array([ax,ay,az]),"r":6.0+i*1.5,
+                          "w":0.05+0.02*i,"ph":i*1.7})
+            pm.pivot=tail; pm.tilt=(0,heading); scouts.append(pm)
+    # comms buoy at the surface -- swarm mesh relay
+    bx,by,bz=_farm(-6.0),_farm(0.0),_farm(-15.0)
+    v,f=_solid_cylinder(_farm(0.9),-_farm(0.3),_farm(0.3),seg=12)
+    bm=Mesh(v,f,C_BUOY,name="comms buoy")
+    bm.pivot=np.array([bx,by+_farm(0.1),bz]); bm.tilt=(math.pi/2,0); scouts.append(bm)
+    scouts.append(_pipe((bx,by+_farm(0.3),bz),(bx,by+_farm(2.6),bz),_farm(0.06),C_TEXT_DIM))
+    v,f=_box(bx,by+_farm(2.7),bz,_farm(0.5),_farm(0.3),_farm(0.5))
+    scouts.append(_static(v,f,C_PING,"mesh antenna"))
+    # buoy anchor line to the seabed
+    scouts.append(_pipe((bx,by-_farm(0.2),bz),(bx,_farm(-19.0),bz+_farm(1.0)),
+                        _farm(0.03),C_UMBIL))
+    parts.append(Part("scouts","SURVEY AUVs + COMMS BUOY",scouts,
+        ["%d untethered AUVs scout ahead of the fence -- they find"%HERDING["free_auvs"],
+         "the school, read its size and mood, and hand it to the dogs.",
+         "Shown: 4 patrolling the perimeter in survey circles.",
+         "SUB: eDNA sampler confirms the cohort is DNA-barcoded ours",
+         "SUB: side-scan sonar census, predator check, health read",
+         "COMMS BUOY: surface relay -- acoustic below, satellite mesh above",
+         "TECH: 24 h endurance, 500 m rating, auto-dock on the magazine",
+         "SIM: 20 years zero-failure, zero AUVs lost"],
+        10,(-0.3,0.6,-0.7),C_AUV_BODY))
+
+    # =========================================================================
+    # 11. JUVENILE RELEASE MANIFOLD -- seeding the ranch zone (RELEASE season)
+    # =========================================================================
+    rel=[]; rxx=gx-_farm(2.0); ryy=_farm(4.0); rzz=_farm(-10.0)
+    # stern release header tank on the work deck
+    v,f=_solid_cylinder(_farm(1.6),-_farm(1.2),_farm(1.2),seg=16)
+    rt=Mesh(v,f,_mix(C_RANCH_RELEASE,(0,0,0),0.15),name="release header")
+    rt.pivot=np.array([rxx,ryy,rzz]); rt.tilt=(0,math.pi/2); rel.append(rt)
+    # four release chutes over the stern pumping PL/juveniles into the zone
+    for i in range(4):
+        rz=rzz+_farm(-3.0+i*2.0)
+        rel.append(_pipe((rxx,ryy-_farm(0.6),rz),(rxx+_farm(6.0),_farm(0.3),rz+_farm(0.5)),
+                         _farm(0.30),C_RANCH_RELEASE))
+        # translucent juvenile plume drifting out of each chute
+        for k in range(3):
+            px=rxx+_farm(7.0+k*2.2); py=_farm(-0.4-k*0.9); pz=rz+_farm(0.6)
+            v,f=_solid_cylinder(_farm(0.30+k*0.25),-_farm(0.8),_farm(0.8),seg=6)
+            pl=Mesh(v,f,_mix(C_RANCH_RELEASE,(255,255,255),0.2),name="juvenile plume",
+                    alpha=0.35,
+                    anim={"kind":"plume","p0":np.array([px,py,pz]),
+                          "drift":_farm(3.0),"rate":0.08+0.02*k,"phase":k*0.33})
+            rel.append(pl)
+    # nutrient booster pod rack (goal doc: boosters triple carrying capacity)
+    for i in range(4):
+        bx2=rxx+_farm(3.0+i*1.2)
+        v,f=_solid_cylinder(_farm(0.42),-_farm(0.55),_farm(0.55),seg=10)
+        bp=Mesh(v,f,C_BOOST,name="booster pod")
+        bp.pivot=np.array([bx2,ryy-_farm(1.0),rzz+_farm(6.5)]); rel.append(bp)
+    parts.append(Part("ranch_release","JUVENILE RELEASE + BOOSTERS",rel,
+        ["RELEASE season hardware (the ranch cycle's first phase):",
+         "stern header feeds %d release chutes pumping DNA-barcoded PL20"%4,
+         "and 5-10 g juveniles into the nursery zone -- %.0f t stocked"%FARM_CYCLE["restock_t_per_zone"],
+         "per zone pass, %.0f%% self-made survival already inside them."%85.0,
+         "NUTRIENT BOOSTERS: %d t/zone of timed-release microalgae+"%HERDING["booster_t_per_zone"],
+         "mineral pods triple local carrying capacity (%.0fx)."%HERDING["carrying_cap_boost_x"],
+         "SUB: release chutes double as eDNA census sampling points",
+         "SUB: booster pods dissolve on a 90-day clock",
+         "MAT: 316L header + chutes, biodegradable booster shells",
+         "TECH: drones re-task as release markers -- they pace the zone",
+         "      and geo-fence the seeded ground until the juveniles settle",
+         "SIM: 20 years zero-failure, release logged per batch to DNA lab"],
+        11,(-0.5,0.4,0.6),C_RANCH_RELEASE))
+
+    # =========================================================================
+    # 12. ZONE PERIMETER BUOYS -- the ranch boundary (GPS + strobe + sonar)
+    # =========================================================================
+    buoys=[]
+    for i,(bx2,bz2) in enumerate(((-14.0,-20.0),(-4.0,-24.0),(8.0,-20.0),
+                                  (-14.0,20.0),(-4.0,24.0),(8.0,20.0))):
+        bx3,by3,bz3=_farm(bx2),_farm(0.0),_farm(bz2)
+        v,f=_solid_cylinder(_farm(0.8),-_farm(0.4),_farm(0.4),seg=12)
+        bo=Mesh(v,f,C_BUOY,name="zone buoy")
+        bo.pivot=np.array([bx3,by3,bz3]); bo.tilt=(math.pi/2,0); buoys.append(bo)
+        buoys.append(_pipe((bx3,by3+_farm(0.3),bz3),(bx3,by3+_farm(3.2),bz3),
+                           _farm(0.05),C_TEXT_DIM))
+        v,f=_solid_cylinder(_farm(0.16),-_farm(0.12),_farm(0.12),seg=8)
+        sb=Mesh(v,f,C_WARN,name="strobe"); sb.pivot=np.array([bx3,by3+_farm(3.4),bz3])
+        buoys.append(sb)
+        # downward-looking sonar puck under each buoy (zone census grid)
+        v,f=_solid_cylinder(_farm(0.22),-_farm(0.10),_farm(0.10),seg=8)
+        sp=Mesh(v,f,C_PING,name="sonar puck"); sp.pivot=np.array([bx3,by3-_farm(0.8),bz3])
+        buoys.append(sp)
+        buoys.append(_pipe((bx3,by3-_farm(0.2),bz3),(bx3,_farm(-19.0),bz3),
+                           _farm(0.025),C_UMBIL))
+    parts.append(Part("buoys","ZONE PERIMETER BUOYS",buoys,
+        ["The ranch boundary, marked and instrumented:",
+         "%d GPS/strobe buoys fence the %.0f x %.0f km zone -- the drones"%(
+            6,FARM_CYCLE["zone_len_km"],FARM_CYCLE["zone_width_km"]),
+         "and the AI treat the line as law: herd inside, never outside.",
+         "SUB: downward sonar puck per buoy = standing-biomass census grid",
+         "SUB: strobe + AIS beacon warns partner + passing traffic",
+         "TECH: the zone rest years are enforced by the same line --",
+         "      a buoy field is simply moved when the zone rotates",
+         "SIM: zone %d/%d rests %.0f yr between passes"%(
+            1,FARM_CYCLE["zones"],FARM_CYCLE["rest_years_per_zone"])],
+        12,(0,0.5,-0.8),C_BUOY))
+
+    # =========================================================================
+    # 13. HERDING COMMAND CONTAINER -- the AI that runs the set
+    # =========================================================================
+    ctrl=[]; cxx=gx-_farm(5.0); cyy=_farm(6.6); czz=_farm(7.5)
+    v,f=_box(cxx,cyy,czz,_farm(4.6),_farm(2.6),_farm(3.2))
+    ctrl.append(_static(v,f,C_CONTROL,"herding command container"))
+    # display wall on the container face (the swarm picture, live)
+    v,f=_box(cxx+_farm(2.35),cyy+_farm(0.2),czz,_farm(0.06),_farm(1.5),_farm(2.6))
+    dw=Mesh(v,f,_mix(C_PING,(10,20,30),0.55),name="swarm display wall")
+    ctrl.append(dw)
+    # comms mast + antenna dome on the roof
+    ctrl.append(_pipe((cxx,cyy+_farm(1.3),czz),(cxx,cyy+_farm(4.6),czz),_farm(0.07),C_TEXT_DIM))
+    v,f=_solid_cylinder(_farm(0.35),-_farm(0.18),_farm(0.18),seg=10)
+    ad=Mesh(v,f,C_DRONE_NOSE,name="antenna dome")
+    ad.pivot=np.array([cxx,cyy+_farm(4.7),czz]); ctrl.append(ad)
+    # cable run: container -> reel -> magazine (power + fibre backhaul)
+    ctrl.append(_pipe((cxx+_farm(1.0),cyy-_farm(1.3),czz+_farm(1.0)),
+                      (rx,ry-_farm(1.0),_farm(6.0)),_farm(0.05),C_UMBIL))
+    ctrl.append(_pipe((cxx+_farm(1.4),cyy-_farm(1.3),czz+_farm(1.2)),
+                      (mx-_farm(1.0),my-_farm(0.3),mz-_farm(1.5)),_farm(0.05),C_UMBIL))
+    parts.append(Part("control","HERDING COMMAND CONTAINER",ctrl,
+        ["The brain of the spread: %s."%HERDING["ai_model"],
+         "Reads every drone's %s,"%HERDING["sensor_suite"],
+         "re-plans the corridor (wall/funnel/arc/sweep) and re-tunes the",
+         "stimulus amplitude to the school's mood -- too hard and they",
+         "scatter, too soft and they leak.",
+         "SUB: swarm display wall + fibre backhaul over the umbilicals",
+         "SUB: auto-deploy/retrieve logic owns reel + carousel + chutes",
+         "TECH: herding policy retrained after every set -- trip N+1",
+         "      always herds better than trip N",
+         "SIM: 20 years, delivery efficiency learned to %.0f%%"%HERDING["herd_eff_pct"]],
+        13,(-0.7,0.3,0.5),C_CONTROL))
+
+    # Recentre the spread: the funnel+net action should sit at the view origin,
+    # the stern gantry falls naturally off-frame to port.
+    for p in parts:
+        for m in p.meshes:
+            m.verts[:,0]-=_farm(12.0)
+            m.pivot[0]-=_farm(12.0)
+    return parts
+
+# ============================================================================
+# SECTION 8B -- MANUFACTURING / BLUEPRINT SPEC BLOCKS (SE.py V1.17 MFG card)
+# Per-part machining, material, tolerance and service records appended to the
+# inspector spec card and expanded in the SPEC sheet's drawing record.
+# ============================================================================
+
+MFG_SPEC={
+    # --- rotary H2 engine ----------------------------------------------------
+    "ring":[
+        "MFG: Inconel 718 investment cast + HIP, 8 chambers 5-axis milled;",
+        "     %.0f L swept pocket each; trochoid face crosshatch-honed"%(
+            DIMS["chamber_depth_m"]*DIMS["chamber_width_m"]
+            *DIMS["ring_thick_m"]*0.72*1000.0),
+        "     30deg Ra 0.4; C-SiC apex seals, 0.05 mm side-seal clearance."],
+    "injector":[
+        "MFG: piezo-stack direct injector, 350 bar H2 rail, 8x dia 0.4 mm;",
+        "     ~15 um spray SMD, 0.12 ms response, tungsten seat insert."],
+    "shaft":[
+        "MFG: 300M vac-arc remelt steel, gun-drilled oil gallery;",
+        "     journals ground h6 (Ra 0.2), nitrided 0.4 mm case;",
+        "     balance G1.0 @ 12k rpm; magnetic-bearing lands."],
+    "clutch":[
+        "MFG: sintered-bronze plates on 65Mn separators, waffle",
+        "     grooves 0.5 mm; pack clearance %.0f mm;"%(
+            DIMS["clutch_plate_thick_m"]*1000.0),
+        "     hydraulic clamp 24-85 bar; FKM seal stack 400 bar proof."],
+    "trans":[
+        "MFG: %d forged 9310 rings, carburized 1.0 mm case, 60-62 HRC;"%DIMS["trans_rings"],
+        "     annular gap lands +-0.02, ta-C DLC 2 um (u~0.10 wet);",
+        "     brazed oil galleries x12/ring; axial runout <15 um."],
+    "outgear":[
+        "MFG: 20MnCr5 case-carburized pinion, DIN 5 ground flanks;",
+        "     +0.4 profile shift, 8 um lead crown, LH thread stake."],
+    "directclutch":[
+        "MFG: direct wet clutch disc, sintered friction rings both faces;",
+        "     24 radial segments; drive shaft + coupling flange, x8 bolts."],
+    "generator":[
+        "MFG: axial-flux PM dual-rotor; N52UH NdFeB Halbach 7.5deg skew;",
+        "     0.1 mm Si-steel lams, litz wire, class-H VPI epoxy;",
+        "     airgap 0.8 mm; 20 MW continuous to the DC bus."],
+    "flywheel":[
+        "MFG: W90-Ni-Cu heavy alloy rim %.0f kg, vacuum can 0.05 mbar;"%DIMS["flywheel_mass_kg"],
+        "     HTS magnetic bearings (<0.15%%/h decay); rated 12000 rpm."],
+    "turbo":[
+        "MFG: Inconel 713C turbine + K418 compressor wheel, 360deg brgs;",
+        "     roots-type auto supercharger on electric clutch, 24 V."],
+    "steam":[
+        "MFG: 316L finned tube orbital-TIG; 3-stage compound expander;",
+        "     aerogel+vacuum insulation jacket (heat-trap, 95%% kept);",
+        "     steam stage d %.2f m / gen d %.2f m."%(
+            DIMS["steam_stage_d_m"],DIMS["steam_gen_d_m"])],
+    "heatshield":[
+        "MFG: Inconel 625 foil vanes, gold-flash reflector;",
+        "     PCM thermal bank %.2f m dia x %.2f m; 95%% block heat in-loop."%(
+            DIMS["thermal_bank_d_m"],DIMS["thermal_bank_len_m"])],
+    # --- semi-submersible hull -------------------------------------------------
+    "hulls":[
+        "MFG: %d torpedo pontoons, EH36 plate 32-45 mm, 240 m;"%HULL_FORM["pontoons"],
+        "     pressure-rated to 40 m submergence, 100%% UT gauged;",
+        "     superhydrophobic SiO2 nano-coat, 155 deg, 20 yr."],
+    "columns":[
+        "MFG: %d stability columns, AH36 45 mm plate, D %.0f m;"%(
+            HULL_FORM["pontoons"]*HULL_FORM["columns_per_pontoon"],HULL_FORM["column_d_m"]),
+        "     waterplane area is THE storm spec -- see SECTION 2;",
+        "     ring-stiffened, ballast trunks inside each column."],
+    "deck":[
+        "MFG: truss deck box %.0f m deep, orthotropic plate;"%HULL_FORM["deck_box_h_m"],
+        "     welded block erection, camber for runoff;",
+        "     rated green-water slam load per DNV semisub rules."],
+    "railings":[
+        "MFG: 316L rail stanchions, 1.1 m height, storm lashings."],
+    "solar":[
+        "MFG: perovskite-on-silicon tandem canopy, 35%% cells on carbon tray;",
+        "     %.0f m2 elevated cargo-roof + fold-out wings;"%SOLAR_ARRAY["canopy_m2"],
+        "     per-group bypass diodes, IP67 edge seal, MPPT to bus."],
+    "electro":[
+        "MFG: coated-steel ballast tanks, %d concentric mesh cathodes;"%DIMS["mesh_layers"],
+        "     nickel foam + IrO2 anode, membrane H2/O2 split;",
+        "     seawater feed doubles as ballast trim (dual-function)."],
+    "h2buffer":[
+        "MFG: Type IV composite cylinders, CF wound on PA liner;",
+        "     %.0f bar, %.0f t bank; NGV refuel + PRD venting."%(
+            DIMS["h2_bar"],DIMS["h2_capacity_kg"]/1000.0)],
+    "genset":[
+        "MFG: rotary H2 engine per engine-card spec -- Inconel 718 HIP,",
+        "     8 chambers, C-SiC apex seals, G1.0 balance, 20 MW elec."],
+    "battery":[
+        "MFG: LFP prismatic cells, %.0f MWh structural bank;"%ELEC["batt_mwh"],
+        "     laser-welded Cu/Al busbars, per-module fuses, IP67."],
+    "house":[
+        "MFG: aluminium bridge house, laminated solar facade panels;",
+        "     360 deg laminated windows; funnel = intake + exhaust stack."],
+    "habitat":[
+        "MFG: crew habitat platform, 2 floors x %.0f m2; grass deck,"%(DIMS["habitat_len_m"]*DIMS["habitat_w_m"]),
+        "     vibration-isolated mounts, hydroponic planters."],
+    "pods":[
+        "MFG: azimuth pod hulls cast + faired; %d-pole EM rail stator;"%DIMS["rail_poles"],
+        "     bronze 5-blade prop dia %.1f m, no gearbox (rail direct)."%DIMS["prop_d_m"]],
+    "heavefins":[
+        "MFG: %d aerofoil fins on linear-generator rails, 5 m stroke;"%DIMS["heave_fins"],
+        "     buoyancy up / gravity down; blade doubles as sail."],
+    "sails":[
+        "MFG: Dacron square sails, %.0f m2 x %d masts;"%(
+            DIMS["sail_area_m2"],DIMS["sail_masts"]),
+        "     auto-deploy >%.1f m/s wind, furl >%.0f m/s."%(
+            DIMS["sail_deploy_wind_ms"],DIMS["sail_furl_wind_ms"])],
+    "rotors":[
+        "MFG: vertical-axis disc, %d helical arms, carbon blades;"%DIMS["rotor_blades"],
+        "     rotary wind harvester -- generates at ANY heading."],
+    "tunnel":[
+        "MFG: bow->stern duct %.0f m, lined; %d bladeless micro-turbines;"%(
+            DIMS["tunnel_len_m"],DIMS["tunnel_turbines"]),
+        "     fills the wake (form-drag cut) + skims flow energy."],
+    "weights":[
+        "MFG: %d suspended bobs on sprung rails, internal only;"%DIMS["weight_harvesters"],
+        "     reclaim roll/pitch/heave -- pendulum-skirt harvester."],
+    "broodstock":[
+        "MFG: %d stacked maturation tanks, GRP 8 m dia x 4 m;"%DIMS["broodstock_tanks"],
+        "     LED photoperiod rigs, ozone + UV polish, auto-grading;",
+        "     200,000 female capacity, RAS-shared water loop."],
+    "larval":[
+        "MFG: %d conical larval tanks, food-grade PP, 6 m dia;"%DIMS["larval_tanks"],
+        "     aeration ring + central standpipe, 80%% PL20 survival."],
+    "nursery":[
+        "MFG: %d flow-through grow-out pools, 12 m dia x 2.5 m;"%DIMS["nursery_pools"],
+        "     ambient seawater + RAS trim, biofloc inoculated;",
+        "     PL20 -> 5-10 g juveniles in 90-120 days."],
+    "release":[
+        "MFG: %d stainless release chutes, 2 m dia, gravity-fed;"%DIMS["release_chutes"],
+        "     trickle-release valves, counter + eDNA sampler at lip."],
+    "feed":[
+        "MFG: %d feed production tanks; algae + BSF + biofloc + yeast"%DIMS["feed_tanks"],
+        "     blended onboard -- $0.00/kg feed, zero bunkering."],
+    "dnalab":[
+        "MFG: %.0f m2 clean lab, CRISPR-Cas9 barcode suite;"%DIMS["dna_lab_m2"],
+        "     automated tagging at release; eDNA reader at the net."],
+    "otec":[
+        "MFG: deep cold-water intake pipe + Ti plate heat exchangers;",
+        "     3 MW 24/7 baseload from the thermocline gradient."],
+    "auvbay":[
+        "MFG: stern AUV rack, %d cradles + inductive charge;"%AUV_FLEET["count"],
+        "     auto-dock funnel, freshwater rinse, dry service bay."],
+    "rafts":[
+        "MFG: 6 floating solar modules, stowed + towed in DRIFT;",
+        "     +21 MW peak when streamed astern on the drift line."],
+    "antenna":[
+        "MFG: radar + satcom dome + whip array on masthead;",
+        "     swarm-mesh relay for the 12-vessel AI net."],
+    "airlube":[
+        "MFG: 5 hull air-lubrication strips + LP compressor;",
+        "     microbubble carpet = 12%% drag cut, stacks with coating."],
+    "imta":[
+        "MFG: 4 seaweed long-lines strung between pontoons;",
+        "     Kappaphycus polyculture -- nutrient strip + sale crop."],
+    "feed_floor":[
+        "MFG: %d shallow raceways, food-grade liner, LED strips;"%DIMS["feed_floor_raceways"],
+        "     photosynthetic feed floor -- algae grown in sunlight."],
+    "enrichment":[
+        "MFG: %d nutrient dispersal pipes + %d mixers;"%(DIMS["enrichment_pipes"],DIMS["enrichment_mixers"]),
+        "     induces phyto blooms astern -- feeds the released cohort."],
+    "algae":[
+        "MFG: %d ponds + %d photobioreactors, gas-tight skim;"%(DIMS["algae_ponds"],DIMS["algae_photobioreactors"]),
+        "     chlorella line -- feed, O2, CO2 capture in one loop."],
+    "brood":[
+        "MFG: stacked RAS maturation; eyestalk-safe hormone-free lines;",
+        "     domesticated P. monodon, 5-6 spawns/female/yr."],
+    "dna":[
+        "MFG: clean-room barcode suite, heritable neutral marker;",
+        "     sampled at the chute, re-read at the cod end."],
+    # --- drone shrimp-herding spread (FARM) ------------------------------------
+    "gantry":[
+        "MFG: S690 A-frame + fairlead boom, hydraulic fold rams;",
+        "     fold-flat <10 min for STORM; 60 t SWL load-pin rigged."],
+    "reel":[
+        "MFG: %d powered drums, 316L, Dyneema umbilical grooves;"%HERDING["reel_drums"],
+        "     per-drum servo tension, level-wind carriage, regen payout."],
+    "drop":[
+        "MFG: HDPE rotary magazine %d slots, AI-indexed, failsafe brake;"%HERDING["magazine_drones"],
+        "     %d PTFE drop chutes 40deg, splash-damped exit;"%HERDING["drop_chutes"],
+        "     inductive charge ring + desalination rinse; cradle funnel."],
+    "umbilical":[
+        "MFG: Dyneema-core tether, 400 daN, Cu pair + SM fibre;",
+        "     TPU jacket, wet-mate connectors, servo tension drums."],
+    "drones":[
+        "MFG: %.2f m 316L torpedo hull, %d ducted thrusters;"%(
+            HERDING["drone_len_m"],HERDING["thrusters_per_drone"]),
+        "     acoustic horn %.0f-%.0f Hz + %.0f nm LED bar;"%(
+            HERDING["acoustic_lo_hz"],HERDING["acoustic_hi_hz"],HERDING["led_nm"]),
+        "     e-field electrodes %.1f V/m, nose sonar %.0f m, IP68."%(
+            HERDING["efield_v_per_m"],HERDING["sonar_range_m"])],
+    "bubble":[
+        "MFG: 316L perforated manifold + 9 ceramic diffuser stones;",
+        "     micro-bubble wall -- optical opacity ~80%% at 2.5 kn sweep."],
+    "ping":[
+        "MFG: rotating ping-arc emitters + belly e-field nodes;",
+        "     stimulus tuned live by the herding AI per school mood."],
+    "school":[
+        "MFG: not hardware -- the DNA-barcoded cohort itself;",
+        "     released by this vessel, tracked since the chute."],
+    "net":[
+        "MFG: Dyneema knotless 4-panel otter trawl, 316L frame;",
+        "     AI-variable mesh %.0f-%.0f mm, ceramic TED + BRD;"%(
+            HERD_NET["mesh_min_mm"],HERD_NET["mesh_max_mm"]),
+        "     headrope sonar pod, cod-end lift line, %.0f t bag."%HERD_NET["cod_end_t"]],
+    "scouts":[
+        "MFG: 2.2x-scale survey AUVs, side-scan + eDNA sampler;",
+        "     24 h endurance, 500 m rating, auto-dock to magazine."],
+    "ranch_release":[
+        "MFG: 316L release header + %d stern chutes, eDNA sample taps;"%4,
+        "     %d t biodegradable booster pods, 90-day dissolve."%HERDING["booster_t_per_zone"]],
+    "buoys":[
+        "MFG: rotation-moulded buoy hulls, GPS + strobe + sonar puck;",
+        "     chain anchor, 5 yr service interval, AIS class B."],
+    "control":[
+        "MFG: ISO container shell, 2x AI racks, swarm display wall;",
+        "     fibre backhaul to reel/carousel, EMC shielded."],
+    "env":[
+        "MFG: not hardware -- the operating volume itself;",
+        "     surface to -19 m seabed, 1.5 kn cross-current rating."],
+}
+
+
+def _attach_mfg(parts):
+    """Append the MANUFACTURING / BLUEPRINT block to every inspector spec card.
+    Numbered keys resolve by stripping digits / taking the first token."""
+    for p in parts:
+        extra=(MFG_SPEC.get(p.key)
+               or MFG_SPEC.get(p.key.rstrip("0123456789_"))
+               or MFG_SPEC.get(p.key.split("_")[0]))
+        if extra and "--- MANUFACTURING / BLUEPRINT ---" not in p.specs:
+            p.specs=p.specs+["--- MANUFACTURING / BLUEPRINT ---"]+extra
+
+
+def _proc_route(part):
+    """Parse the part's spec/MFG text into an OP-numbered process route.
+    Keywords map to canonical shop operations in drawing order."""
+    txt=" ".join(part.specs).lower()
+    seq=(("forged","FORGE"),("cast","CAST"),("printed","AM-PRINT"),
+         ("prepreg","PREPREG"),("layup","LAYUP"),("wound","WIND"),
+         ("machined","MACHINE"),("milled","MACHINE"),("gun-drill","GUN-DRILL"),
+         ("ground","GRIND"),("grind","GRIND"),("honed","HONE"),
+         ("carburized","CARBURIZE"),("nitrided","NITRIDE"),("hip","HIP"),
+         ("annealed","ANNEAL"),("brazed","BRAZE"),("tig","TIG-WELD"),
+         ("welded","WELD"),("autoclave","AUTOCLAVE"),("cured","CURE"),
+         ("potted","POT"),("anodized","ANODIZE"),("dlc","DLC-COAT"),
+         ("plated","PLATE"),("coated","COAT"),("film","FILM"),
+         ("painted","PAINT"),("balanced","BALANCE"),
+         ("torqued","TORQUE"),("staked","STAKE"),
+         ("gauged","UT-GAUGE"),("faired","FAIR"),
+         ("hipot","HIPOT"),("cmm","CMM-QC"),("inspected","INSPECT"))
+    steps=[]
+    for kw,op in seq:
+        if kw in txt and op not in steps:
+            steps.append(op)
+    if not steps:
+        steps=["STOCK","ASSEMBLE"]
+    if steps[-1] not in ("INSPECT","CMM-QC","HIPOT","UT-GAUGE"):
+        steps.append("INSPECT")
+    return steps
+
 # ============================================================================
 # SECTION 9 -- MARINE PHYSICS: POWER, PROPULSION, ENERGY HARVEST
 # ============================================================================
@@ -5160,12 +7014,159 @@ def hanging_weight_kw(sea_state,v_kn):
 def tunnel_turbine_kw(v_kn):
     flow_kw=0.5*1025.0*(DIMS["tunnel_w_m"]*DIMS["tunnel_h_m"])*(max(0.0,v_kn)*KN_TO_MS)**3/1000.0*0.0006
     return flow_kw*TUNNEL["turbine_eff"]
+def PHYS_TEMP_LIMIT_C(): return MPHYS["shutdown_c"]
 def solar_lens_kw(sun,block_temp_c):
     aperture_m2=math.pi*(DIMS["sunlens_aperture_m"]*0.5)**2
-    fade=clamp((THERM["shutdown_c"]-block_temp_c)/(THERM["shutdown_c"]-SUN_LENS["defocus_temp_c"]))
+    fade=clamp((PHYS_TEMP_LIMIT_C()-block_temp_c)/(PHYS_TEMP_LIMIT_C()-SUN_LENS["defocus_temp_c"]))
     return aperture_m2*SOLAR_IRRADIANCE_W*DIMS["solar_eff"]*SUN_LENS["optical_eff"]*sun*fade/1000.0
 def h2_made_kg(electric_kwh): return max(0.0,electric_kwh)/ELECTROLYSIS_KWH_KG
 def h2_energy_elec_kwh(kg): return kg*H2_LHV_KWH_KG*H2_ENGINE_EFF
+
+# --- MARINE ENGINE PHYSICS (SE.py base design: solve_marine_physics) ---------
+# First-order physics INSIDE the 8-chamber H2 rotary block: ideal-gas charge
+# mass (PV = nRT), AFR-based H2 fuel flow, the indicated -> mechanical ->
+# generator efficiency chain, hydraulic clamp force -> clutch torque -> slip
+# heat, a two-stage exhaust split (turbo boost work -> stage-2 recovery
+# turbine -> boiler), and the closed-loop ORC recovery path.
+def effective_chamber_volume_m3():
+    """Sealed H2 charge pocket per chamber, from the rendered ring dimensions
+    (depth x width x ring thickness x pocket-fill). Same geometry the viewer
+    draws -- the physics sees the machine you are looking at."""
+    return (DIMS["chamber_depth_m"]*DIMS["chamber_width_m"]
+            *DIMS["ring_thick_m"]*0.72)
+def marine_pressure_ratio(super_eng):
+    """Stacked charge pressure: exhaust turbo x compression-gate assist x the
+    slow auto-supercharger ramp (the same bounded gains the voyage applies)."""
+    return (MPHYS["turbo_pressure_ratio"]*(1.0+MPHYS["gate_psi_frac"])
+            *(1.0+SUPERCHARGER_BOOST_GAIN*clamp(super_eng)))
+def marine_thermal_derate(temp_c):
+    """Linear power derate between overheat and shutdown (SE.py pattern):
+    below overheat -> 1.0; at/above shutdown -> 0.0."""
+    if temp_c<=MPHYS["overheat_c"]: return 1.0
+    if temp_c>=MPHYS["shutdown_c"]: return 0.0
+    span=MPHYS["shutdown_c"]-MPHYS["overheat_c"]
+    return clamp(1.0-(temp_c-MPHYS["overheat_c"])/max(1e-6,span),0.0,1.0)
+def orc_work_ramp(boiler_c,fluid):
+    """Usable ORC work ramp 0..1: zero at/below the fluid's working onset (the
+    higher of its boil point and ambient -- you can only do WORK from a
+    temperature difference ABOVE the cold-side sink, never from ambient heat
+    alone). Saturates at the fluid's full-work temperature."""
+    fl=FLUIDS.get(fluid,FLUIDS[DEFAULT_FLUID])
+    onset_c=max(THERM["ambient_c"],fl["boil_c"])
+    return clamp((boiler_c-onset_c)/max(1.0,fl["full_c"]-onset_c))
+def orc_recovery_eff(fluid):
+    """Heat->electric recovery efficiency for the fluid: compound expander
+    gain x dual-chamber duty, capped by the Carnot-bounded ceiling."""
+    fl=FLUIDS.get(fluid,FLUIDS[DEFAULT_FLUID])
+    compound_gain=1.0+(THERM["compound_stages"]-1)*THERM["stage_gain"]
+    return min(THERM["recovery_eff_cap"],
+               fl["gen_eff"]*compound_gain*THERM["dual_chamber_gain"])
+def solve_marine_physics(k,combustions,temp_c,coolant_flow,hyd_cmd,
+                         firing,slip_load,boiler_c=None,
+                         fluid=DEFAULT_FLUID,fluid_health=1.0):
+    """First-order physical state of the rotary H2 block for one frame
+    (SE.py base design, ported from GmansRunV1.17's solve_engine_physics).
+
+    Air mass per firing event comes from the ideal gas law on the rendered
+    chamber; fuel mass follows the lean H2 AFR; shaft/generator power ride the
+    efficiency chain; the hydraulic clamp force sets clutch torque and slip
+    heat; the exhaust splits into turbo boost work, a stage-2 recovery
+    turbine, and boiler heat; the closed-loop ORC path compounds the pressure
+    internally until weak, wearing the working fluid as it recovers."""
+    if boiler_c is None: boiler_c=THERM["ambient_c"]
+    fl=FLUIDS.get(fluid,FLUIDS[DEFAULT_FLUID])
+    rpm=max(0.0,abs(k.get("piston",0.0))); core_rpm=abs(k.get("core",0.0))
+    ep=clamp(k.get("ep",0.0)); c1=clamp(k.get("c1",0.0))
+    bind=clamp(k.get("bind",0.0)); super_eng=clamp(k.get("super",0.0))
+    comb_per_rev=max(1,int(round(combustions)))
+    load=ep if firing else 0.0
+    derate=marine_thermal_derate(temp_c) if firing else 1.0
+    pr=marine_pressure_ratio(super_eng)
+    pressure_pa=MPHYS["ambient_pa"]*pr
+    intake_k=MPHYS["intake_temp_k"]+18.0*max(0.0,pr-1.0)
+    chamber_v=effective_chamber_volume_m3()
+    events_s=(rpm/60.0*comb_per_rev*DIMS["chambers"])*load
+    air_kg_event=(pressure_pa*chamber_v/(MPHYS["air_r"]*intake_k)
+                  *MPHYS["volumetric_eff"]*MPHYS["seal_eff"])
+    air_kg_s=air_kg_event*events_s
+    fuel_kg_s=air_kg_s/MPHYS["target_afr"] if firing and derate>0.0 else 0.0
+    gross_kw=fuel_kg_s*MPHYS["h2_lhv_j_kg"]/1000.0
+    shaft_kw=gross_kw*MPHYS["indicated_eff"]*MPHYS["mechanical_eff"]*derate
+    gear_eff=MPHYS["gear_mesh_eff"]**(1.0+0.25*max(0,k.get("gear",1)-1))
+    bearing_kw=MPHYS["bearing_drag_kw"]*(rpm/3000.0)**2
+    net_shaft_kw=max(0.0,shaft_kw-bearing_kw)
+    gen_kw=net_shaft_kw*MPHYS["generator_eff"]*gear_eff
+    # hydraulic clamp load -> clutch torque -> slip heat (recover-only path)
+    hyd_bar=MPHYS["hydraulic_max_bar"]*clamp(hyd_cmd)
+    main_clamp_kn=hyd_bar*1e5*MPHYS["main_clutch_area_m2"]/1000.0
+    ring_clamp_kn=hyd_bar*1e5*MPHYS["ring_bind_area_m2"]/1000.0
+    main_torque_nm=main_clamp_kn*1000.0*MPHYS["friction_mu_wet"]*MPHYS["main_clutch_radius_m"]
+    ring_torque_nm=ring_clamp_kn*1000.0*MPHYS["friction_mu_wet"]*MPHYS["ring_bind_radius_m"]
+    lock=clamp(k.get("lock",bind))
+    slip_main_rpm=abs(rpm-core_rpm)
+    slip_ring_rpm=abs(core_rpm*max(0.0,k.get("gr",1.0)-1.0)*(1.0-lock))
+    slip_main_kw=main_torque_nm*(slip_main_rpm*2.0*math.pi/60.0)/1000.0
+    slip_ring_kw=ring_torque_nm*(slip_ring_rpm*2.0*math.pi/60.0)/1000.0
+    slip_heat_kw=min(MPHYS["friction_kw_cap"],
+                     (slip_main_kw*(1.0-c1)+slip_ring_kw*(1.0-lock))
+                     *max(0.0,slip_load))
+    friction_kw=slip_heat_kw+bearing_kw
+    waste_kw=max(0.0,gross_kw-shaft_kw)
+    block_heat_kw=waste_kw*MPHYS["heat_to_block_frac"]+friction_kw
+    exhaust_kw=waste_kw*(1.0-MPHYS["heat_to_block_frac"])
+    flow=clamp(coolant_flow)
+    # --- two-stage exhaust recovery ---------------------------------------
+    exh_turbo_kw=exhaust_kw*MPHYS["exhaust_turbo_frac"]      # turbo boost work
+    exh_left_kw=max(0.0,exhaust_kw-exh_turbo_kw)
+    exh_stage2_kw=exh_left_kw*THERM["second_stage_frac"]     # turbine -> elec
+    exh_to_boiler_kw=(exh_left_kw-exh_stage2_kw)*THERM["exhaust_to_boiler_frac"]
+    # --- closed-loop ORC steam recovery ------------------------------------
+    onset_c=max(THERM["ambient_c"],fl["boil_c"])
+    work_ramp=clamp((boiler_c-onset_c)/max(1.0,fl["full_c"]-onset_c))
+    steam_span=max(1.0,fl["full_c"]-fl["boil_c"])
+    steam_ramp=clamp((boiler_c-fl["boil_c"])/steam_span)
+    steam_bar=fl["max_bar"]*steam_ramp
+    recovery_eff=orc_recovery_eff(fluid)
+    steam_draw_kw=fl["capacity_kw"]*work_ramp
+    # Aging fluid recovers less until serviced; recovered electricity is ALWAYS
+    # a fraction (recovery_eff < 1) of the heat actually drawn from the boiler.
+    steam_kw=steam_draw_kw*recovery_eff*(0.55+0.45*clamp(fluid_health))
+    recover_kw=steam_kw+exh_stage2_kw
+    # passive loss: the cooling ring + heat shield KEEP heat_trap_frac of it
+    passive_kw=MPHYS["coolant_ua_kw_c"]*max(0.0,temp_c-THERM["ambient_c"])*(1.0-THERM["heat_trap_frac"])
+    condition_kw=0.0
+    if temp_c>MPHYS["overheat_c"]:
+        condition_kw=THERM["condition_ua_kw_c"]*flow*(temp_c-MPHYS["overheat_c"])
+    shield_flow_kw=THERM["shield_ua_kw_c"]*(temp_c-boiler_c)
+    heat_in_block=block_heat_kw                        # combustion + friction
+    heat_in_boiler=shield_flow_kw+exh_to_boiler_kw     # directed + exhaust
+    cool_kw=shield_flow_kw+passive_kw+condition_kw     # total leaving BLOCK
+    status="NORMAL"
+    if temp_c>=MPHYS["shutdown_c"]: status="SHUTDOWN"
+    elif temp_c>=MPHYS["overheat_c"]: status="OVERHEAT"
+    return {"pressure_kpa":pressure_pa/1000.0,"pressure_ratio":pr,
+        "chamber_cc":chamber_v*1e6,"events_s":events_s,
+        "air_g_s":air_kg_s*1000.0,"fuel_g_s":fuel_kg_s*1000.0,
+        "afr":MPHYS["target_afr"],"gross_kw":gross_kw,
+        "shaft_kw":shaft_kw,"gen_kw":gen_kw,"waste_kw":waste_kw,
+        "block_heat_kw":block_heat_kw,"exhaust_kw":exhaust_kw,
+        "friction_kw":friction_kw,"slip_heat_kw":slip_heat_kw,
+        "cool_kw":cool_kw,"orc_kw":recover_kw,
+        "heat_in_block":heat_in_block,"exh_turbo_kw":exh_turbo_kw,
+        "exh_stage2_kw":exh_stage2_kw,"exh_to_boiler_kw":exh_to_boiler_kw,
+        "steam_kw":steam_kw,"steam_bar":steam_bar,
+        "steam_max_bar":fl["max_bar"],"steam_ramp":steam_ramp,
+        "steam_draw_kw":steam_draw_kw,"recovery_eff":recovery_eff,
+        "fluid":fluid,"boiler_c":boiler_c,
+        "heat_in_boiler":heat_in_boiler,"shield_flow_kw":shield_flow_kw,
+        "passive_kw":passive_kw,"condition_kw":condition_kw,
+        "hyd_bar":hyd_bar,"main_clamp_kn":main_clamp_kn,
+        "ring_clamp_kn":ring_clamp_kn,"main_torque_nm":main_torque_nm,
+        "ring_torque_nm":ring_torque_nm,"bearing_kw":bearing_kw,
+        "derate":derate,"overheat":temp_c>=MPHYS["overheat_c"],
+        "shutdown":temp_c>=MPHYS["shutdown_c"],"status":status,
+        "gear_eff":gear_eff,"work_ramp":work_ramp}
+
 def diesel_fuel_tonnes(distance_nm,speed_kn):
     hours=distance_nm/max(1e-6,speed_kn)
     p_kw=PROP_COEF_KW*speed_kn**3/PROP_TRAIN_EFF+HOTEL_KW
@@ -5192,9 +7193,31 @@ class MarinePowertrain:
         self.fly_omega=0.0; self.fly_rpm=0.0
         self.ring_rpm=0.0; self.gen_rpm=0.0
         self.genset_on=False; self.block_temp_c=THERM["ambient_c"]
+        # --- V1.17c multi-mass heat network + ORC state (SE.py base design) --
+        self.boiler_c=THERM["ambient_c"]      # ORC boiler working-fluid temp
+        self.pcm_c=THERM["ambient_c"]         # PCM thermal-bank temperature
+        self.clutch1_engage=0.0               # wet-stack clamp state 0..1
+        self.trans_bind=0.0                   # ring-layer bind state 0..1
+        self.firing_phase=0.0                 # combustion animation phase
+        self.fluid=DEFAULT_FLUID              # ORC working fluid (F cycles)
+        self.fluid_kwh=0.0                    # ORC energy processed since service
+        self.fluid_life=1.0                   # wears down -> service resets it
+        self.fluid_services=0
+        self.teg_kwh=0.0                      # TEG film-bank recovery tally
+        self.bus_loss_kwh=0.0                 # MVDC busbar I2R copper loss
+        self.predict_shift=0.0                # daylight-forecast SOC shift
+        self.soc_target=GENSET_OFF_SOC        # effective charge target
+        self.genset_on_soc=GENSET_ON_SOC
+        self.sc_boost=0.0                     # auto-supercharger spool 0..1
+        self.genset_cmd_kw=0.0                # genset output after ECU slew
+        self.cap_max=ELEC.get("supercap_mwh",3.0)*1000.0
+        self.cap_kwh=0.5*self.cap_max         # DC-link supercap buffer
+        self.elec={"volts":BUS["pack_v_nom"],"amps":0.0,"loss_kw":0.0,"over_limit":False}
         self.speed_kn=0.0; self.throttle=0.0
         self.rudder_deg=0.0; self.heading_deg=0.0
-        self.ballast_fore_t=0.0; self.trim_deg=0.0
+        self.ballast_fore_t=0.0; self.ballast_aft_t=0.0
+        self.ballast_port_t=0.0; self.ballast_stbd_t=0.0
+        self.trim_deg=0.0
         self.cargo_t=0.0
         self.solar_kwh=0.0; self.prop_kwh=0.0; self.harvest_kwh=0.0
         self.regen_boost_kwh=0.0; self.sail_kwh=0.0; self.solar_lens_kwh=0.0
@@ -5203,7 +7226,7 @@ class MarinePowertrain:
         self.mode="SOLAR CRUISE"; self.flow={}
         for k in ("solar","electro","genset","steam","prop","batt","heave","rotor",
                   "tunnel","weights","sunlens","sail","regenboost",
-                  "otec","digester","kite","float_solar"):
+                  "otec","digester","kite","float_solar","farm","teg","busloss"):
             self.flow[k]=0.0
         # Hatchery state
         self.hatchery_cycle_day=0
@@ -5439,16 +7462,177 @@ class MarinePowertrain:
             room=(ELEC["soc_max"]-self.soc)*self.batt_kwh
             accepted=min(charge,room)
             self.soc+=accepted/self.batt_kwh
+            # fast spikes overflow into the DC-link supercap first-loss-free
+            # window? no -- the loss is paid on the way IN, so overflow goes
+            # to the flywheel as mechanical storage (SE.py route order).
+            spill=(charge-accepted)/STORAGE["battery_rt"] if charge>1e-9 else 0.0
+            into_cap=min(spill,max(0.0,self.cap_max-self.cap_kwh))
+            self.cap_kwh+=into_cap*STORAGE["supercap_rt"]
+            spill-=into_cap
+            if spill>0.0:
+                E=max(0.0,self.fly_kwh()+spill*STORAGE["flywheel_rt"])*3.6e6
+                self.fly_omega=min(math.sqrt(max(0.0,2*E/self.fly_I)),
+                                   FLYWHEEL_MAX_RPM*2*math.pi/60.0)
         else:
             draw=-kwh/STORAGE["battery_rt"]
             avail=(self.soc-ELEC["soc_min"])*self.batt_kwh
-            drawn=min(draw,avail)
+            from_cap=min(draw,self.cap_kwh)  # fastest buffer discharges first
+            self.cap_kwh-=from_cap
+            drawn=min(draw-from_cap,avail)
             self.soc-=drawn/self.batt_kwh
 
-    def update_demo(self,dt):
-        self.update(dt,sun=0.85,sea_state=0.25)
+    def _predict_window(self,sun,hour_of_day):
+        """SE.py daylight-forecast SOC window: the sun schedule is
+        deterministic, so shift the genset charge window with the forecast --
+        top the bank before dusk, hold fire before dawn."""
+        if hour_of_day is None:
+            self.predict_shift=0.0
+        else:
+            tau=PREDICT["lookahead_h"]/PREDICT["samples"]
+            f_ahead=sum(sun_factor((hour_of_day+(i+1)*tau)%24.0)
+                        for i in range(PREDICT["samples"]))/PREDICT["samples"]
+            slope=f_ahead-sun_factor(hour_of_day)
+            self.predict_shift=-PREDICT["soc_swing"]*clamp(slope/PREDICT["sun_ref"],-1.0,1.0)
+        self.genset_on_soc=clamp(GENSET_ON_SOC+self.predict_shift,
+                                 GENSET_CRIT_SOC+0.02,0.90)
+        self.soc_target=clamp(GENSET_OFF_SOC+self.predict_shift,
+                              self.genset_on_soc+0.05,0.95)
 
-    def update(self,dt,sun,sea_state):
+    def _genset_step(self,dt,dt_h,cmd_target_kw):
+        """SE.py base cycle for one tick: auto-supercharger ceiling, ECU slew
+        (a marine switchboard cannot step megawatts in zero seconds), thermal
+        derate, then the H2 burn that pays for it. Returns
+        (genset_elec_kw, fuel_thermal_kw, h2_burn_kg)."""
+        self.sc_boost+=((1.0 if self.genset_on else 0.0)-self.sc_boost)*min(1.0,dt*SUPERCHARGER_RAMP_RATE)
+        ceiling=GENSET_RATED_KW*(1.0+SUPERCHARGER_BOOST_GAIN*self.sc_boost)
+        if self.genset_on:
+            cmd=clamp(cmd_target_kw,GENSET_MIN_KW,ceiling)
+            cmd=min(cmd,self.h2_kg*H2_LHV_KWH_KG*H2_ENGINE_EFF/max(dt_h,1e-6))
+        else:
+            cmd=0.0
+        self.genset_cmd_kw+=clamp(cmd-self.genset_cmd_kw,
+                                  -ECU["slew_kw_s"]*dt,ECU["slew_kw_s"]*dt)
+        derate=marine_thermal_derate(self.block_temp_c)
+        genset_elec_kw=max(0.0,self.genset_cmd_kw)*derate
+        fuel_thermal_kw=genset_elec_kw/H2_ENGINE_EFF if genset_elec_kw>0.0 else 0.0
+        h2_burn=fuel_thermal_kw*dt_h/H2_LHV_KWH_KG
+        self.h2_kg=max(0.0,self.h2_kg-h2_burn); self.h2_used+=h2_burn
+        if self.genset_on and self.h2_kg<=0.5: self.genset_on=False
+        return genset_elec_kw,fuel_thermal_kw,h2_burn
+
+    def _heat_network(self,dt,fuel_thermal_kw,genset_elec_kw,lens_kw=0.0):
+        """SE.py multi-mass heat network, sub-stepped against the stiff
+        coupling. Block soaks the combustion waste; the heat shield couples
+        it into the compact ORC boiler; leftover exhaust splits into turbo
+        boost work, a stage-2 recovery turbine (electric) and boiler heat;
+        the PCM bank soaks boiler excess and returns it slowly after
+        shutdown; the conditioner dumps heat only once actually overheating;
+        TEG film panels skim the block-to-ambient delta-T. Returns
+        (steam_kw, exh_stage2_kw, teg_kw)."""
+        waste_kw=max(0.0,fuel_thermal_kw-genset_elec_kw)
+        teg_kw=min(TEG["cap_kw"],TEG["kw_per_c"]
+                   *max(0.0,self.block_temp_c-THERM["ambient_c"]))
+        self.teg_kwh+=teg_kw*dt/3600.0
+        block_heat_kw=waste_kw*MPHYS["heat_to_block_frac"]
+        exhaust_kw=waste_kw*(1.0-MPHYS["heat_to_block_frac"])
+        exh_left_kw=exhaust_kw*(1.0-MPHYS["exhaust_turbo_frac"])
+        exh_stage2_kw=exh_left_kw*THERM["second_stage_frac"]
+        exh_to_boiler_kw=(exh_left_kw-exh_stage2_kw)*THERM["exhaust_to_boiler_frac"]
+        # ORC work ramp on the live boiler temp; the fluid wears with
+        # recovered energy until serviced (auto-service resets the count).
+        self.fluid_life=clamp(1.0-self.fluid_kwh
+                              /max(1e-6,FLUIDS[self.fluid]["service_kwh"]))
+        fl_d=FLUIDS[self.fluid]
+        onset_c=max(THERM["ambient_c"],fl_d["boil_c"])
+        span_c=max(1.0,fl_d["full_c"]-onset_c)
+        steam_draw_cap=fl_d["capacity_kw"]
+        steam_eff=orc_recovery_eff(self.fluid)*(0.55+0.45*self.fluid_life)
+        amb=THERM["ambient_c"]; shield_ua=THERM["shield_ua_kw_c"]
+        cool_ua=MPHYS["coolant_ua_kw_c"]*(1.0-THERM["heat_trap_frac"])
+        cond_ua=THERM["condition_ua_kw_c"]; overheat=MPHYS["overheat_c"]
+        max_t=MPHYS["max_temp_c"]; blk_m=MPHYS["thermal_mass_kj_c"]
+        boil_leak=THERM["boiler_leak_kw_c"]; pcm_cpl=THERM["pcm_couple_kw_c"]
+        boil_m=THERM["boiler_mass_kj_c"]; pcm_leak=THERM["pcm_leak_kw_c"]
+        pcm_m=THERM["pcm_kj_c"]; boil_in=exh_to_boiler_kw+lens_kw
+        nsub=8; sdt=dt/nsub; steam_sum=0.0
+        blk_k=sdt/blk_m; boil_k=sdt/boil_m; pcm_k=sdt/pcm_m
+        bt=self.block_temp_c; bc=self.boiler_c; pc=self.pcm_c
+        inv_span=1.0/span_c
+        for _ in range(nsub):
+            ramp=(bc-onset_c)*inv_span
+            if ramp<0.0: ramp=0.0
+            elif ramp>1.0: ramp=1.0
+            draw=steam_draw_cap*ramp
+            shield=shield_ua*(bt-bc)
+            passive=cool_ua*(bt-amb)
+            if passive<0.0: passive=0.0
+            cond=cond_ua*(bt-overheat)
+            if cond<0.0: cond=0.0
+            bt+=(block_heat_kw-shield-passive-cond)*blk_k
+            pcm_flow=pcm_cpl*(bc-pc)
+            bc+=(boil_in+shield-pcm_flow-draw-boil_leak*max(0.0,bc-amb))*boil_k
+            pc+=(pcm_flow-pcm_leak*max(0.0,pc-amb))*pcm_k
+            steam_sum+=draw*steam_eff
+            if bt<amb: bt=amb
+            elif bt>max_t: bt=max_t
+            if bc<amb: bc=amb
+            elif bc>max_t: bc=max_t
+            if pc<amb: pc=amb
+            elif pc>max_t: pc=max_t
+        self.block_temp_c=bt; self.boiler_c=bc; self.pcm_c=pc
+        steam_kw=steam_sum/nsub
+        # ORC fluid wears with recovered energy; auto-service when spent.
+        self.fluid_kwh+=steam_kw*dt/3600.0
+        if self.fluid_kwh>=fl_d["service_kwh"]:
+            self.fluid_kwh=0.0; self.fluid_life=1.0; self.fluid_services+=1
+        return steam_kw,exh_stage2_kw,teg_kw
+
+    def update_demo(self,dt,bench=None):
+        """ENGINE preview: always-firing showcase answered by the test-bench
+        sliders when provided (ring power / hydraulic clamp / trans shifter /
+        coolant) -- SE.py base design."""
+        self.genset_on=True
+        ep=bench["ring"] if bench else 0.75
+        hyd=bench["hyd"] if bench else 0.5
+        coolant=bench["coolant"] if bench else 0.55
+        self.demo_gear=int(bench["gear"]) if bench else 2
+        self.demo_hyd=hyd
+        tgt_ring=MPHYS["ring_idle_rpm"]+(MPHYS["ring_rated_rpm"]-MPHYS["ring_idle_rpm"])*ep
+        self.ring_rpm+=(tgt_ring-self.ring_rpm)*min(1.0,dt*2.0)
+        gr=trans_ratios()[min(self.demo_gear,len(trans_ratios())-1)]
+        self.gen_rpm=self.ring_rpm*gr
+        self.clutch1_engage+=((hyd if ep>0.05 else 0.0)-self.clutch1_engage)*min(1.0,dt*3.0)
+        self.trans_bind+=(((0.35+0.6*hyd) if ep>0.05 else 0.15)-self.trans_bind)*min(1.0,dt*3.0)
+        self.fly_omega+=(9000.0*2*math.pi/60.0*(0.3+0.7*ep)-self.fly_omega)*min(1.0,dt*0.12)
+        self.sc_boost+=((1.0 if ep>0.05 else 0.0)-self.sc_boost)*min(1.0,dt*SUPERCHARGER_RAMP_RATE)
+        # coolant slider fights the burn: higher coolant -> cooler block
+        tgt_temp=60.0+150.0*ep*(1.15-0.5*coolant)
+        self.block_temp_c+=(tgt_temp-self.block_temp_c)*min(1.0,dt*0.3)
+        # boiler tracks the block through the shield coupling; PCM lags both
+        shield=THERM["shield_ua_kw_c"]*(self.block_temp_c-self.boiler_c)
+        pcm_flow=THERM["pcm_couple_kw_c"]*(self.boiler_c-self.pcm_c)
+        self.boiler_c+=(shield-pcm_flow
+                        -THERM["boiler_leak_kw_c"]*max(0.0,self.boiler_c-THERM["ambient_c"])) \
+            /max(1e-6,THERM["boiler_mass_kj_c"])*dt
+        self.boiler_c=max(THERM["ambient_c"],min(MPHYS["max_temp_c"],self.boiler_c))
+        self.pcm_c+=(pcm_flow-THERM["pcm_leak_kw_c"]*max(0.0,self.pcm_c-THERM["ambient_c"])) \
+            /max(1e-6,THERM["pcm_kj_c"])*dt
+        self.pcm_c=max(THERM["ambient_c"],min(MPHYS["max_temp_c"],self.pcm_c))
+
+    def _bus_loss(self,flow_kw,dt_h):
+        """MVDC busbar copper loss (SE.py BUS model): I = P/V on the DC link,
+        then I2R heating of the busbar. Counted as a parasitic loss and
+        flagged when the current exceeds the breaker limit."""
+        amps=flow_kw*1000.0/max(1.0,BUS["pack_v_nom"])
+        loss_w=amps*amps*BUS_R_OHM
+        self.elec["amps"]=amps
+        self.elec["volts"]=BUS["pack_v_nom"]
+        self.elec["loss_kw"]=loss_w/1000.0
+        self.elec["over_limit"]=amps>BUS["bus_a_max"]
+        self.bus_loss_kwh+=self.elec["loss_kw"]*dt_h
+        return self.elec["loss_kw"]
+
+    def update(self,dt,sun,sea_state,hour_of_day=None):
         self.total_ticks+=1
         dt_h=dt/3600.0
         # ---- vessel mode transformation progress ----
@@ -5486,27 +7670,21 @@ class MarinePowertrain:
             harvest_kw=heave_kw+windmill_kw_+weight_kw+tunnel_kw
             regen_boost_kw=harvest_kw*REGEN_BOOST["direct_frac"]*REGEN_BOOST["pod_boost_eff"]
             harvest_to_batt_kw=harvest_kw*(1.0-REGEN_BOOST["direct_frac"])
-            # drift power draw is minimal (hatchery + hotel only)
-            prop_kw=DRIFT["power_draw_kw"]
+            # drift power draw is minimal (hatchery + hotel + AUV survey)
+            farm_kw=herd_survey_power_kw()
+            prop_kw=DRIFT["power_draw_kw"]+farm_kw
             sail_kw=0.0  # minimal sail is direct thrust, not electric
-            # genset rarely needed in drift
-            if self.soc<GENSET_CRIT_SOC:
+            # genset rarely needed in drift (predictive SOC window, SE.py)
+            self._predict_window(sun,hour_of_day)
+            if self.soc<self.genset_on_soc or self.soc<GENSET_CRIT_SOC:
                 self.genset_on=True
-            elif self.soc>GENSET_OFF_SOC:
+            elif self.soc>self.soc_target:
                 self.genset_on=False
-            genset_elec_kw=0.0; fuel_thermal_kw=0.0; waste_kw=0.0; steam_kw=0.0
-            if self.genset_on:
-                load_kw=max(GENSET_MIN_KW,min(GENSET_RATED_KW,(ELEC["soc_max"]-self.soc)*self.batt_kwh*0.5))
-                fuel_thermal_kw=load_kw/(H2_ENGINE_EFF*0.95)
-                genset_elec_kw=load_kw*0.95; waste_kw=fuel_thermal_kw-genset_elec_kw
-                steam_kw=waste_kw*STEAM_RECOVER_FRAC+lens_kw
-                genset_total_kw=genset_elec_kw+steam_kw
-                h2_burn=fuel_thermal_kw*dt_h/H2_LHV_KWH_KG
-                self.h2_kg=max(0.0,self.h2_kg-h2_burn); self.h2_used+=h2_burn
-                self.block_temp_c=max(THERM["ambient_c"],self.block_temp_c+(waste_kw*(1.0-THERM["heat_trap_frac"]*0.0)-(self.block_temp_c-THERM["ambient_c"])*0.9)*dt/max(1e-6,THERM["block_mass_kj_c"]))
-            else:
-                genset_total_kw=0.0
-                self.block_temp_c+=(THERM["ambient_c"]-self.block_temp_c)*min(1.0,dt/120.0)
+            target_kw=max(GENSET_MIN_KW,min(GENSET_RATED_KW,(ELEC["soc_max"]-self.soc)*self.batt_kwh*0.5))
+            genset_elec_kw,fuel_thermal_kw,_h2b=self._genset_step(dt,dt_h,target_kw)
+            steam_kw,exh2_kw,teg_kw=self._heat_network(dt,fuel_thermal_kw,genset_elec_kw,lens_kw)
+            recover_kw=steam_kw+exh2_kw
+            genset_total_kw=genset_elec_kw+recover_kw
             if not self.genset_on: self.engine_off_ticks+=1
             # electrolysis from surplus
             spare=sol_kw+harvest_to_batt_kw-prop_kw
@@ -5516,17 +7694,19 @@ class MarinePowertrain:
                 electro_kw=clamp(spare,0.0,ELECTROLYSER_MAX_KW)*(1.0-taper)
                 made=h2_made_kg(electro_kw*dt_h)
                 self.h2_kg=min(self.h2_max,self.h2_kg+made); self.h2_made+=made
-            net_kw=sol_kw+genset_total_kw+harvest_to_batt_kw-prop_kw-electro_kw
+            net_kw=sol_kw+genset_total_kw+teg_kw+harvest_to_batt_kw-prop_kw-electro_kw
+            self._bus_loss(abs(net_kw),dt_h)
             self.route_storage(net_kw*dt_h)
             self.harvest_kwh+=harvest_kw*dt_h; self.regen_boost_kwh+=regen_boost_kw*dt_h
             self.solar_kwh+=sol_kw*dt_h; self.prop_kwh+=prop_kw*dt_h
             self.solar_lens_kwh+=lens_kw*dt_h
             self.flow={"solar":sol_kw,"electro":electro_kw,"genset":genset_elec_kw,
-                       "steam":steam_kw,"prop":prop_kw,"batt":net_kw,
+                       "steam":recover_kw,"prop":prop_kw,"batt":net_kw,
                        "heave":heave_kw,"rotor":windmill_kw_,"tunnel":tunnel_kw,
                        "weights":weight_kw,"sunlens":lens_kw,"sail":0.0,
-                       "regenboost":regen_boost_kw,
+                       "regenboost":regen_boost_kw,"farm":farm_kw,
                        "otec":otec_kw,"digester":digester_kw_,"kite":kite_kw_,
+                       "teg":teg_kw,"busloss":self.elec["loss_kw"],
                        "float_solar":FLOATING_SOLAR["additional_peak_kw"]*sun if self.floating_solar_deployed else 0.0}
             if self.genset_on: self.mode="DRIFT + ENGINE CHARGE"
             elif electro_kw>50: self.mode="DRIFT + H2 MAKE"
@@ -5557,7 +7737,11 @@ class MarinePowertrain:
             v_target=HARVEST["trawl_speed_kn"]
             self.speed_kn+=(v_target-self.speed_kn)*min(1.0,dt/40.0)
             trawl_kw=trawl_power_kw(self.trawl_deploy_frac>0.5)
-            prop_kw=propulsion_kw(self.speed_kn,sea_state,self.superhydrophobic_on)+HOTEL_KW+trawl_kw
+            # the fish-dog spread draws real power while the trawl is out:
+            # reel servos + charge ring + bubble compressor + stimuli + AI
+            farm_kw=herd_power_kw()*self.trawl_deploy_frac
+            prop_kw=(propulsion_kw(self.speed_kn,sea_state,self.superhydrophobic_on)
+                     +HOTEL_KW+trawl_kw+farm_kw)
             # catch
             if self.trawl_deploy_frac>0.5:
                 caught=trawl_catch_kg(dt_h,True)
@@ -5580,26 +7764,19 @@ class MarinePowertrain:
                 if self.juveniles_released>0:
                     harvestable=self.juveniles_released*RECAPTURE["juvenile_to_harvest_survival"]*self.recapture_frac
                     self.recapture_value_usd=harvestable*(RECAPTURE["harvest_size_g"]/1000.0)*RECAPTURE["recapture_value_usd_per_kg"]
-            # genset
-            if self.soc<GENSET_ON_SOC or (self.soc<GENSET_OFF_SOC and self.genset_on):
+            # genset (predictive SOC window, SE.py)
+            self._predict_window(sun,hour_of_day)
+            if self.soc<self.genset_on_soc or (self.soc<self.soc_target and self.genset_on):
                 self.genset_on=True
-            elif self.soc>GENSET_OFF_SOC:
+            elif self.soc>self.soc_target:
                 self.genset_on=False
-            if self.genset_on and self.block_temp_c>=THERM["shutdown_c"]:
+            if self.genset_on and self.block_temp_c>=MPHYS["shutdown_c"]:
                 self.genset_on=False
-            genset_elec_kw=0.0; fuel_thermal_kw=0.0; waste_kw=0.0; steam_kw=0.0
-            if self.genset_on:
-                load_kw=max(GENSET_MIN_KW,min(GENSET_RATED_KW,(ELEC["soc_max"]-self.soc)*self.batt_kwh*0.5))
-                fuel_thermal_kw=load_kw/(H2_ENGINE_EFF*0.95)
-                genset_elec_kw=load_kw*0.95; waste_kw=fuel_thermal_kw-genset_elec_kw
-                steam_kw=waste_kw*STEAM_RECOVER_FRAC+lens_kw
-                genset_total_kw=genset_elec_kw+steam_kw
-                h2_burn=fuel_thermal_kw*dt_h/H2_LHV_KWH_KG
-                self.h2_kg=max(0.0,self.h2_kg-h2_burn); self.h2_used+=h2_burn
-                self.block_temp_c=max(THERM["ambient_c"],self.block_temp_c+(waste_kw*(1.0-THERM["heat_trap_frac"]*0.0)-(self.block_temp_c-THERM["ambient_c"])*0.9)*dt/max(1e-6,THERM["block_mass_kj_c"]))
-            else:
-                genset_total_kw=0.0
-                self.block_temp_c+=(THERM["ambient_c"]-self.block_temp_c)*min(1.0,dt/120.0)
+            target_kw=max(GENSET_MIN_KW,min(GENSET_RATED_KW,(ELEC["soc_max"]-self.soc)*self.batt_kwh*0.5))
+            genset_elec_kw,fuel_thermal_kw,_h2b=self._genset_step(dt,dt_h,target_kw)
+            steam_kw,exh2_kw,teg_kw=self._heat_network(dt,fuel_thermal_kw,genset_elec_kw,lens_kw)
+            recover_kw=steam_kw+exh2_kw
+            genset_total_kw=genset_elec_kw+recover_kw
             if not self.genset_on: self.engine_off_ticks+=1
             spare=sol_kw+harvest_to_batt_kw-prop_kw
             electro_kw=0.0
@@ -5608,17 +7785,19 @@ class MarinePowertrain:
                 electro_kw=clamp(spare,0.0,ELECTROLYSER_MAX_KW)*(1.0-taper)
                 made=h2_made_kg(electro_kw*dt_h)
                 self.h2_kg=min(self.h2_max,self.h2_kg+made); self.h2_made+=made
-            net_kw=sol_kw+genset_total_kw+harvest_to_batt_kw-prop_kw-electro_kw
+            net_kw=sol_kw+genset_total_kw+teg_kw+harvest_to_batt_kw-prop_kw-electro_kw
+            self._bus_loss(abs(net_kw),dt_h)
             self.route_storage(net_kw*dt_h)
             self.harvest_kwh+=harvest_kw*dt_h; self.regen_boost_kwh+=regen_boost_kw*dt_h
             self.solar_kwh+=sol_kw*dt_h; self.prop_kwh+=prop_kw*dt_h
             self.solar_lens_kwh+=lens_kw*dt_h
             self.flow={"solar":sol_kw,"electro":electro_kw,"genset":genset_elec_kw,
-                       "steam":steam_kw,"prop":prop_kw,"batt":net_kw,
+                       "steam":recover_kw,"prop":prop_kw,"batt":net_kw,
                        "heave":heave_kw,"rotor":windmill_kw_,"tunnel":tunnel_kw,
                        "weights":weight_kw,"sunlens":lens_kw,"sail":0.0,
-                       "regenboost":regen_boost_kw,
+                       "regenboost":regen_boost_kw,"farm":farm_kw,
                        "otec":otec_kw,"digester":digester_kw_,"kite":kite_kw_,
+                       "teg":teg_kw,"busloss":self.elec["loss_kw"],
                        "float_solar":0.0}
             if self.genset_on: self.mode="HARVEST + ENGINE"
             elif self.trawl_deploy_frac>0.5: self.mode="HARVEST (TRAWL)"
@@ -5643,26 +7822,24 @@ class MarinePowertrain:
             # genset only if critical
             if self.soc<GENSET_CRIT_SOC: self.genset_on=True
             elif self.soc>0.40: self.genset_on=False
-            genset_elec_kw=0.0; steam_kw=0.0; genset_total_kw=0.0
-            if self.genset_on:
-                load_kw=GENSET_MIN_KW
-                fuel_thermal_kw=load_kw/(H2_ENGINE_EFF*0.95)
-                genset_elec_kw=load_kw*0.95; genset_total_kw=genset_elec_kw
-                h2_burn=fuel_thermal_kw*dt_h/H2_LHV_KWH_KG
-                self.h2_kg=max(0.0,self.h2_kg-h2_burn); self.h2_used+=h2_burn
+            genset_elec_kw,fuel_thermal_kw,_h2b=self._genset_step(dt,dt_h,GENSET_MIN_KW)
+            steam_kw,exh2_kw,teg_kw=self._heat_network(dt,fuel_thermal_kw,genset_elec_kw,0.0)
+            genset_total_kw=genset_elec_kw+steam_kw+exh2_kw
             if not self.genset_on: self.engine_off_ticks+=1
-            net_kw=sol_kw+genset_total_kw+harvest_to_batt_kw-prop_kw
+            net_kw=sol_kw+genset_total_kw+teg_kw+harvest_to_batt_kw-prop_kw
+            self._bus_loss(abs(net_kw),dt_h)
             self.route_storage(net_kw*dt_h)
             self.harvest_kwh+=harvest_kw*dt_h
             self.solar_kwh+=sol_kw*dt_h; self.prop_kwh+=prop_kw*dt_h
             self.flow={"solar":sol_kw,"electro":0.0,"genset":genset_elec_kw,
-                       "steam":steam_kw,"prop":prop_kw,"batt":net_kw,
+                       "steam":steam_kw+exh2_kw,"prop":prop_kw,"batt":net_kw,
                        "heave":heave_kw,"rotor":windmill_kw_,"tunnel":tunnel_kw,
                        "weights":weight_kw,"sunlens":0.0,"sail":0.0,
                        "regenboost":regen_boost_kw,
                        "otec":OTEC["rated_kw"] if OTEC["enabled"] else 0.0,
                        "digester":DIGESTER["biogas_kw"] if DIGESTER["enabled"] else 0.0,
-                       "kite":0.0,"float_solar":0.0}
+                       "teg":teg_kw,"busloss":self.elec["loss_kw"],
+                       "kite":0.0,"float_solar":0.0,"farm":0.0}
             self.mode="STORM SURVIVAL"
             self._update_hatchery(dt_h,sun*0.1)
             self._update_ai(dt_h,dt,sun*0.1,sea_state)
@@ -5702,30 +7879,19 @@ class MarinePowertrain:
         v_target=clamp(v_target,MIN_CRUISE_KN,MAX_CRUISE_KN)
         self.speed_kn+=(v_target-self.speed_kn)*min(1.0,dt/20.0)
         prop_kw=propulsion_kw(self.speed_kn,sea_state,self.superhydrophobic_on)+HOTEL_KW
-        # genset
-        if self.soc<GENSET_ON_SOC or (self.soc<GENSET_OFF_SOC and self.genset_on):
+        # genset (predictive SOC window, SE.py)
+        self._predict_window(sun,hour_of_day)
+        if self.soc<self.genset_on_soc or (self.soc<self.soc_target and self.genset_on):
             self.genset_on=True
-        elif self.soc>GENSET_OFF_SOC:
+        elif self.soc>self.soc_target:
             self.genset_on=False
-        if self.genset_on and self.block_temp_c>=THERM["shutdown_c"]:
+        if self.genset_on and self.block_temp_c>=MPHYS["shutdown_c"]:
             self.genset_on=False
-        genset_elec_kw=0.0; fuel_thermal_kw=0.0; waste_kw=0.0; steam_kw=0.0
-        if self.genset_on:
-            load_kw=max(GENSET_MIN_KW,min(GENSET_RATED_KW,(ELEC["soc_max"]-self.soc)*self.batt_kwh*0.5))
-            fuel_thermal_kw=load_kw/(H2_ENGINE_EFF*0.95)
-            genset_elec_kw=load_kw*0.95
-            waste_kw=fuel_thermal_kw-genset_elec_kw
-            steam_kw=waste_kw*STEAM_RECOVER_FRAC+lens_kw
-            genset_total_kw=genset_elec_kw+steam_kw
-            h2_burn=fuel_thermal_kw*dt_h/H2_LHV_KWH_KG
-            self.h2_kg=max(0.0,self.h2_kg-h2_burn); self.h2_used+=h2_burn
-            heat_in=waste_kw*(1.0-THERM["heat_trap_frac"]*0.0)
-            cool=(self.block_temp_c-THERM["ambient_c"])*0.9
-            dT=(heat_in-cool)*dt/max(1e-6,THERM["block_mass_kj_c"])
-            self.block_temp_c=max(THERM["ambient_c"],self.block_temp_c+dT)
-        else:
-            genset_total_kw=0.0
-            self.block_temp_c+=(THERM["ambient_c"]-self.block_temp_c)*min(1.0,dt/120.0)
+        target_kw=max(GENSET_MIN_KW,min(GENSET_RATED_KW,(ELEC["soc_max"]-self.soc)*self.batt_kwh*0.5))
+        genset_elec_kw,fuel_thermal_kw,_h2b=self._genset_step(dt,dt_h,target_kw)
+        steam_kw,exh2_kw,teg_kw=self._heat_network(dt,fuel_thermal_kw,genset_elec_kw,lens_kw)
+        recover_kw=steam_kw+exh2_kw
+        genset_total_kw=genset_elec_kw+recover_kw
         if not self.genset_on: self.engine_off_ticks+=1
         # electrolysis from solar surplus
         spare=sol_kw+harvest_to_batt_kw-prop_kw
@@ -5735,7 +7901,8 @@ class MarinePowertrain:
             electro_kw=clamp(spare,0.0,ELECTROLYSER_MAX_KW)*(1.0-taper)
             made=h2_made_kg(electro_kw*dt_h)
             self.h2_kg=min(self.h2_max,self.h2_kg+made); self.h2_made+=made
-        net_kw=sol_kw+genset_total_kw+harvest_to_batt_kw-prop_kw-electro_kw
+        net_kw=sol_kw+genset_total_kw+teg_kw+harvest_to_batt_kw-prop_kw-electro_kw
+        self._bus_loss(abs(net_kw),dt_h)
         self.route_storage(net_kw*dt_h)
         self.harvest_kwh+=harvest_kw*dt_h; self.regen_boost_kwh+=regen_boost_kw*dt_h
         self.sail_kwh+=sail_kw*dt_h; self.solar_lens_kwh+=lens_kw*dt_h
@@ -5753,12 +7920,13 @@ class MarinePowertrain:
         # tallies
         self.solar_kwh+=sol_kw*dt_h; self.prop_kwh+=prop_kw*dt_h
         self.flow={"solar":sol_kw,"electro":electro_kw,"genset":genset_elec_kw,
-                   "steam":steam_kw,"prop":prop_kw,"batt":net_kw,
+                   "steam":recover_kw,"prop":prop_kw,"batt":net_kw,
                    "heave":heave_kw,"rotor":windmill_kw_,"tunnel":tunnel_kw,
                    "weights":weight_kw,"sunlens":lens_kw,"sail":sail_kw,
                    "regenboost":regen_boost_kw,
                    "otec":otec_kw,"digester":digester_kw_,"kite":kite_kw_,
-                   "float_solar":self.floating_solar_kw}
+                   "teg":teg_kw,"busloss":self.elec["loss_kw"],
+                   "float_solar":self.floating_solar_kw,"farm":0.0}
         batt_boosting=(self.soc>=SYNERGY["batt_boost_soc"] and not self.genset_on and self.speed_kn>v_free*1.02)
         regen_active=regen_boost_kw>10.0; sail_active=sail_kw>20.0
         if self.genset_on and boost: self.mode="ENGINE CHARGE + BOOST"
@@ -6260,6 +8428,12 @@ def build_info_sections():
             "mega-platforms, and hatcheries completely FREE.",
             "Electrolysis efficiency: ~72%%, H2 engine: ~60%%,",
             "Round-trip: ~43%%. The sun covers the losses.",
+            "",
+            "The dispatch order is strict: renewables feed the prop bus",
+            "first, surplus fills the battery, overflow splits seawater to",
+            "H2, and the genset only ever CHARGES.  The ENERGY tab draws",
+            "this chain live -- harvest -> store -> split -> burn -> drive,",
+            "including the %.0f kW the drone farm drinks during a set."%herd_power_kw(),
         ]),
         ("MICROALGAE FARM (FREE FEED via photosynthesis)",[
             "Sun + CO2 + seawater nutrients -> microalgae -> shrimp feed.",
@@ -6330,6 +8504,89 @@ def build_info_sections():
                 SCENARIOS["ENGINEERING"]["price_usd_kg"]),
             "DNA markers = legal ownership of released biomass, and the only",
             "way to prove to a regulator that the catch is ours and additional.",
+        ]),
+        ("DRONE SHRIMP HERDING (the fish-dog spread)",[
+            "Shrimp dart away from a moving stimulus.  That single reflex is",
+            "the whole capture system: instead of dragging a net blind, the",
+            "stern puts a wall of feeling in the water and WALKS the school in.",
+            "",
+            "THE DROP DESIGN -- %d drums x %d lines on the stern reel; the"%(
+                HERDING["reel_drums"],HERDING["lines_per_drum"]),
+            "%d-drone rotary magazine indexes charged drones onto %d PTFE"%(
+                HERDING["magazine_drones"],HERDING["drop_chutes"]),
+            "drop chutes; gravity launches them at %.0f/min while the"%HERDING["drop_per_min"],
+            "umbilical auto-couples on the way past the fairlead.  Full",
+            "%d-drone spread in the water in %.0f minutes, no crane, no crew."%(
+                HERDING["tethered_drones"],herd_deploy_min()),
+            "Each chute ends in a %s. On the way home the"%HERDING["splash_damp"],
+            "cradle scoops drones at %.0f/min, a freshwater rinse kills"%(
+                HERDING["recover_per_min"]),
+            "biofilm, and the rack recharges them inductively in %.0f min."%(
+                HERDING["charge_min"]),
+            "Dyneema-core umbilicals carry power + fibre; a snapped line",
+            "winches its drone home dead-weight -- no swimmer ever needed.",
+            "",
+            "THE FENCE -- each %.2f m fish dog carries: an acoustic horn"%HERDING["drone_len_m"],
+            "(%.0f-%.0f Hz near-field pressure wave), a %.0f nm LED shadow"%(
+                HERDING["acoustic_lo_hz"],HERDING["acoustic_hi_hz"],HERDING["led_nm"]),
+            "bar, a share of the bubble-curtain manifold, and a %.1f V/m"%HERDING["efield_v_per_m"],
+            "pulsed e-field prong.  Startle, never stun -- and the drones",
+            "never touch an animal.  Sonar (%.0f m) closes the loop."%HERDING["sonar_range_m"],
+            "",
+            "THE SENSES -- %s, re-acquiring"%HERDING["sensor_suite"],
+            "the school %.0f times a second.  %s per drone;"%(
+                HERDING["target_tracking_hz"],HERDING["ai_module"]),
+            "the swarm relearns its RL herding policy every set, so trip N",
+            "always herds better than trip N-1.  AI corridor library:",
+            "wall / funnel / arc / sweep, picked live to the school shape.",
+            "",
+            "THE DETECTION -- omnidirectional echo sonar reaches %.0f m"%HERDING["detect_depth_m"],
+            "down and the satellite+AI biomass forecast calls the hotspot",
+            "%.0f%% of the time.  The concentrated school cuts the tow by"%HERDING["hotspot_pred_pct"],
+            "%.0f%% -- same catch, half the bottom time."%HERDING["trawl_time_cut_pct"],
+            "",
+            "THE MATH -- %.0f m fence funnels %.0f:1 onto a %.0f x %.0f m"%(
+                HERDING["spread_m"],herd_funnel_ratio(),
+                HERD_NET["mouth_w_m"],HERD_NET["mouth_h_m"]),
+            "smart net (TED + BRD, AI mesh %.0f-%.0f mm, %.0f t cod end)."%(
+                HERD_NET["mesh_min_mm"],HERD_NET["mesh_max_mm"],HERD_NET["cod_end_t"]),
+            "%.0f%% of the school delivered, %.0fx concentration = %.0f t/set"%(
+                HERDING["herd_eff_pct"],HERDING["concentration_x"],HERDING["catch_t_per_set"]),
+            "vs %.0f t/set blind = %.0f t/day, %.0f t/yr own trawl."%(
+                HERDING["baseline_catch_t_per_set"],herd_catch_t_per_day(),
+                herd_catch_t_per_year()),
+            "",
+            "THE CYCLE -- %d rotating ranching zones (~%.0f km each):"%(
+                FARM_CYCLE["zones"],FARM_CYCLE["zone_len_km"]),
+            "release in spring, survey-grow in summer, herd+harvest in",
+            "autumn, rest+rotate -- each zone rests between passes, taking",
+            "%.0f%% of standing biomass at most.  Farming, not mining."%(
+                FARM_CYCLE["sustainable_take_frac"]*100),
+            "",
+            "RELEASE SEASON -- the same drones seed the zone: %d chutes pump"%4,
+            "barcoded PL20/juveniles while %.0f t of nutrient-booster pods"%(
+                HERDING["booster_t_per_zone"]),
+            "triple local carrying capacity.  %d free AUVs scout ahead,"%(
+                HERDING["free_auvs"]),
+            "census with eDNA samplers, and relay through the comms buoy.",
+            "Two release classes: mass PL20 (%.1f%% to harvest) or 7.5 g"%(
+                RECAPTURE["pl_to_harvest_survival"]*100),
+            "juveniles (%.0f%%) at the sheltered edge -- survival, not"%(
+                RECAPTURE["juvenile_to_harvest_survival"]*100),
+            "fecundity, is the lever.  Window: spring tide + rainy-season",
+            "dispersal at dusk.  Brine tanks run %s;"%RELEASE["brine"],
+            "suppliers top up %.0f+ t of post-larvae per trip when the"%RELEASE["supplier_t_per_trip"],
+            "broodstock cycle is out of phase.  Benchmark for honesty:",
+            RELEASE["penaeid_benchmark"]+".",
+            "",
+            "THE POWER -- the whole spread draws %.0f kW while a set runs"%herd_power_kw(),
+            "(reel %.0f + charge ring %.0f + bubbles %.0f + stimuli %.0f +"%(
+                HERDING["reel_servo_kw"],HERDING["charge_ring_kw"],
+                HERDING["bubble_compressor_kw"],
+                HERDING["stimulus_kw_per_drone"]*HERDING["tethered_drones"]),
+            "control %.0f kW): %.0f kWh per set, all surplus solar.  See"%(
+                HERDING["control_kw"],herd_energy_kwh_per_set()),
+            "the ENERGY tab for where every watt goes, live.",
         ]),
         ("INVESTMENT & FINANCE",[
             "Vessel cost: $%.0fM each   Fleet target: %d vessels"%(
@@ -6736,6 +8993,7 @@ class ShipRenderer:
     def __init__(self,parts_builder,is_engine=False,home_az=0.62,home_el=0.42,home_dist=1.75):
         self.parts_builder=parts_builder; self.is_engine=is_engine
         self.parts=parts_builder()
+        _attach_mfg(self.parts)
         self._home=(home_az,home_el,home_dist)
         self.az,self.el,self.dist=home_az,home_el,home_dist
         self.pan=np.array([0.0,0.0])
@@ -6743,6 +9001,29 @@ class ShipRenderer:
         self.view="full"; self.section=False; self.explode_amt=0.0
         self.assembled=len(self.parts); self.hovered=None; self.selected=None
         self.pop=np.zeros(len(self.parts)); self.hover_spread=0.0
+        self.solo=None                    # SOLO view: isolated part index or None
+        self.auto_rotate=False            # K: slow turntable orbit
+        self.edge_labels=True             # pin part labels to view margins
+        self._last_screeninfo=[]          # screen anchors (blueprint balloons)
+
+    def solo_set(self,i):
+        """Isolate one part, framed to it (S key -- SSF/SE.py port)."""
+        self.solo=max(0,min(len(self.parts)-1,i))
+        self.selected=self.solo; self._frame_part(self.solo)
+    def solo_clear(self):
+        self.solo=None; self.reset_view()
+    def solo_step(self,d):
+        if self.solo is None: return
+        self.solo=(self.solo+d)%len(self.parts); self.selected=self.solo
+        self._frame_part(self.solo)
+    def _frame_part(self,pi):
+        """Reframe the camera on a part's geometric centre + envelope."""
+        lo=np.array([1e9]*3); hi=np.array([-1e9]*3)
+        for m in self.parts[pi].meshes:
+            lo=np.minimum(lo,m.verts.min(axis=0)); hi=np.maximum(hi,m.verts.max(axis=0))
+        cen=(lo+hi)*0.5; span=float(np.linalg.norm(hi-lo))
+        self._solo_center=cen
+        self.dist=max(0.35,span*1.45); self.pan=np.array([0.0,0.0])
 
     def reset_view(self):
         self.az,self.el,self.dist=self._home; self.pan=np.array([0.0,0.0])
@@ -6774,6 +9055,7 @@ class ShipRenderer:
             if p.order==self.assembled: return p
         return None
     def tick(self,dt):
+        if self.auto_rotate: self.az+=dt*0.35
         if self.view!="assembly":
             target=1.0 if self.view=="exploded" else 0.0
             self.explode_amt+=(target-self.explode_amt)*min(1.0,dt*4)
@@ -6794,28 +9076,79 @@ class ShipRenderer:
         c=wv[list(face)].mean(axis=0); return c[0]>0.004
     def render(self,surf,rect,angles,firing_glow=None,mouse_pos=None,
                show_labels=True,label_font=None,interactive=False,
-               injection=None,heat=0.0):
+               injection=None,heat=0.0,view_override=None,fog_col=None,
+               selector_radius=None):
         firing_glow=firing_glow if firing_glow is not None else np.zeros(0)
         clip=surf.get_clip(); surf.set_clip(rect)
         cx=rect.x+rect.w/2.0+self.pan[0]; cy=rect.y+rect.h/2.0+self.pan[1]
         focal=min(rect.w,rect.h)*1.12
         Rcam=rot_x(self.el)@rot_y(self.az)
         default_ang=angles.get("default",0.0)
-        vw=self.view; eamt=self.explode_amt
-        if self.view=="full": eamt+=self.hover_spread
+        vw=view_override or self.view; eamt=self.explode_amt
+        if vw=="full": eamt+=self.hover_spread
         section=self.section and vw in ("full","exploded")
         do_outline=self.is_engine
         hi=self.selected if self.selected is not None else self.hovered
-        polys,labels,leaders,screeninfo,fire_points=[],[],[],[],[]
+        solo_c=getattr(self,"_solo_center",np.zeros(3)) if self.solo is not None else np.zeros(3)
+        polys,apolys,labels,leaders,screeninfo,fire_points=[],[],[],[],[],[]
         lx,ly,lz=float(self.light[0]),float(self.light[1]),float(self.light[2])
+        # depth-fog window: melt the far side of the model into the viewport tone
+        fog0=self.dist*1.18; fog1=self.dist*1.32 if fog_col is not None else -1.0
+        # static-part replay cache: while the camera/view state is unchanged,
+        # parts with no animated geometry re-emit their saved draw lists; only
+        # dynamic parts (spinners, live-pose drones, firing chambers) recompute
+        skey=(self.az,self.el,self.dist,float(self.pan[0]),float(self.pan[1]),
+              vw,bool(self.section),self.solo,self.assembled,
+              round(float(eamt),5),(rect.w,rect.h),fog_col,selector_radius,
+              bool(show_labels and label_font))
         for pi,part in enumerate(self.parts):
+            if self.solo is not None and pi!=self.solo: continue
             base_off,dim,tag=self._layout(pi,vw,eamt)
-            pop=self.pop[pi]; off=base_off+part.popdir*(pop*0.16)
+            pop=self.pop[pi]; off=base_off+part.popdir*(pop*0.16)-solo_c
             highlight=(pi==hi); allcam=[]
-            for m in part.meshes:
-                wv=m.world_verts(angles.get(m.group,default_ang))+off
+            rm=getattr(part,"_rmeshes",None)
+            if rm is None:
+                rm=_consolidate_meshes(part.meshes); part._rmeshes=rm
+            pkey=(round(float(pop),4),dim,tag,highlight)
+            for m in rm:
+                # per-mesh replay: a static mesh (no spin/anim/chamber/heat or
+                # live selector) re-emits its saved face lists whenever the
+                # camera/view state matches; cam is still needed for the part
+                # centroid/screen anchor, so it is recomputed cheaply
+                mstat=not (m.spin or m.anim is not None or
+                           m.chamber_index is not None or m.hot or
+                           (m.selectable and selector_radius is not None))
+                ent=getattr(m,"_rcache",None) if mstat else None
+                if ent is not None and ent[0]==skey and ent[1]==pkey:
+                    polys+=ent[2]; apolys+=ent[3]; labels+=ent[4]
+                    allcam.append(ent[5])      # saved cam-space verts
+                    continue
+                mmark=(len(polys),len(apolys),len(labels)) if mstat else None
+                # bounding-sphere cull (cached radius covers every spin/tilt):
+                # skip meshes fully behind the near plane, projected sub-pixel
+                # (== the per-face LOD result, without the per-face work) or
+                # entirely outside the viewport
+                bsr=getattr(m,"_bsr",None)
+                if bsr is None:
+                    m._bsr=bsr=float(np.sqrt((m.verts*m.verts).sum(1)).max()) if len(m.verts) else 0.0
+                pv=m.pivot+off
+                if m.selectable and selector_radius is not None: pv[0]=selector_radius+off[0]
+                cp=pv@Rcam.T; cz=float(cp[2])+self.dist
+                if cz+bsr<=0.05: continue
+                if bsr>0.0 and self.solo is None:
+                    pr=focal*bsr/max(cz,1e-6)
+                    if pr<0.75: continue                      # whole mesh <1.5 px
+                    if cz>0.05:
+                        pcx=cx+focal*cp[0]/cz; pcy=cy-focal*cp[1]/cz
+                        if (pcx+pr<rect.x or pcx-pr>rect.right or
+                                pcy+pr<rect.y or pcy-pr>rect.bottom):
+                            continue                          # fully off-screen
+                if m.spin or m.tilt[0] or m.tilt[1] or (m.selectable and selector_radius is not None):
+                    wv=m.world_verts(angles.get(m.group,default_ang),selector_radius)+off
+                else:
+                    wv=m.verts+pv                             # static fast-path
                 cam=wv@Rcam.T; cam[:,2]+=self.dist; allcam.append(cam)
-                caml=cam.tolist(); col=m.color
+                col=m.color
                 if m.chamber_index is not None and len(firing_glow):
                     g=firing_glow[m.chamber_index]
                     if g>0.01: col=_mix(C_CHAMBER,C_CHAMBER_FIRE,g)
@@ -6827,35 +9160,75 @@ class ShipRenderer:
                 elif tag=="active": outline,ow=(255,210,120),2
                 elif do_outline: outline,ow=(12,14,18),1
                 else: outline,ow=None,0
-                sxl,syl,dzl=[],[],[]
-                for vx2,vy2,vz2 in caml:
-                    dzl.append(vz2)
-                    if vz2>0.05:
-                        sxl.append(cx+focal*vx2/vz2); syl.append(cy-focal*vy2/vz2)
-                    else: sxl.append(0.0); syl.append(0.0)
+                # vectorised projection -- one numpy pass, not a per-vertex loop
+                zv=cam[:,2]
+                sz=np.where(zv>0.05,zv,1.0)
+                scr=np.stack((cx+focal*cam[:,0]/sz,cy-focal*cam[:,1]/sz),axis=1)
                 if show_labels and label_font and m.name and tag!="pending" and (vw!="full" or highlight):
                     mcen=cam.mean(axis=0)
                     if mcen[2]>0.05:
                         mlx=cx+focal*mcen[0]/mcen[2]; mly=cy-focal*mcen[1]/mcen[2]
                         labels.append((mcen[2],(mlx,mly),m.name,"detail"))
-                for face in m.faces:
-                    if section and self._section_cut(wv,face): continue
-                    clipped=False
-                    for i in face:
-                        if dzl[i]<=0.05: clipped=True; break
-                    if clipped: continue
-                    ax,ay,az=caml[face[0]]; bx,by,bz=caml[face[1]]; fx,fy,fz=caml[face[2]]
-                    ux,uy,uz=bx-ax,by-ay,bz-az; wx,wy,wz=fx-ax,fy-ay,fz-az
-                    nx=uy*wz-uz*wy; ny=uz*wx-ux*wz; nz=ux*wy-uy*wx
-                    inv=1.0/((nx*nx+ny*ny+nz*nz)**0.5 or 1.0)
-                    nx*=inv; ny*=inv; nz*=inv
-                    if nz>0: nx,ny,nz=-nx,-ny,-nz
-                    d=nx*lx+ny*ly+nz*lz
-                    shade=0.35+0.65*(d if d>0.0 else 0.0)
-                    fc=(int(cr*shade),int(cg*shade),int(cb*shade))
-                    ds=0.0
-                    for i in face: ds+=dzl[i]
-                    polys.append((ds/len(face),[(sxl[i],syl[i]) for i in face],fc,outline,ow))
+                F,flen=_face_index(m)
+                if not len(F): continue
+                fz=zv[F]; fsx=scr[F,0]; fsy=scr[F,1]
+                keep=fz.min(axis=1)>0.05                       # near-plane clip
+                if self.solo is None:
+                    # min-area LOD: a face under ~1.5 px contributes nothing
+                    # (SSF.py _LOD_PX port) -- skipped unless solo-framed
+                    keep &= ~(((fsx.max(1)-fsx.min(1))<1.5)&((fsy.max(1)-fsy.min(1))<1.5))
+                if section:
+                    keep &= (wv[F].sum(axis=1)[:,0]/flen)<=0.004   # centroid cut
+                idx=np.nonzero(keep)[0]
+                if not len(idx): continue
+                # face normals are rigid: cache them once in mesh space and
+                # rotate into cam space each frame -- identical result to a
+                # per-frame cross product at a fraction of the cost
+                lns=getattr(m,"_lns",None)
+                if lns is None:
+                    la=m.verts[F[:,0]]; lb=m.verts[F[:,1]]; lc=m.verts[F[:,2]]
+                    lnx=(lb[:,1]-la[:,1])*(lc[:,2]-la[:,2])-(lb[:,2]-la[:,2])*(lc[:,1]-la[:,1])
+                    lny=(lb[:,2]-la[:,2])*(lc[:,0]-la[:,0])-(lb[:,0]-la[:,0])*(lc[:,2]-la[:,2])
+                    lnz=(lb[:,0]-la[:,0])*(lc[:,1]-la[:,1])-(lb[:,1]-la[:,1])*(lc[:,0]-la[:,0])
+                    lnn=lnx*lnx+lny*lny+lnz*lnz; lnn[lnn<1e-24]=1.0
+                    m._lns=lns=np.stack((lnx,lny,lnz),axis=1)/np.sqrt(lnn)[:,None]
+                ranim=None
+                if m.spin: ranim=rot_z(angles.get(m.group,default_ang)*m.spin)
+                if m.tilt[0] and m.tilt[1]:
+                    T=rot_x(m.tilt[0])@rot_y(m.tilt[1])
+                    ranim=T@ranim if ranim is not None else T
+                elif m.tilt[0] or m.tilt[1]:
+                    T=rot_y(m.tilt[1]) if m.tilt[1] else rot_x(m.tilt[0])
+                    ranim=T@ranim if ranim is not None else T
+                nc=(lns@((Rcam@ranim) if ranim is not None else Rcam).T)[idx]
+                if m.alpha==0.0 and not section and _is_closed_mesh(m):
+                    # watertight solid: inward faces can never be seen -- cull
+                    bf=nc[:,2]<=0.0
+                    idx=idx[bf]; nc=nc[bf]
+                    if not len(idx): continue
+                nc[nc[:,2]>0]*=-1.0
+                d=nc[:,0]*lx+nc[:,1]*ly+nc[:,2]*lz
+                # dual-light: key sun + faint fill from the shadow side
+                # (Radiant.py) + a whisper of rim from the camera axis
+                shade=0.30+0.62*np.maximum(d,0.0)+0.16*np.maximum(-d,0.0)+0.05*np.abs(nc[:,2])
+                depth=fz[idx].sum(axis=1)/flen[idx]
+                fcr=cr*shade; fcg=cg*shade; fcb=cb*shade
+                if fog_col is not None:
+                    ft=(depth-fog0)/max(1e-6,fog1-fog0)
+                    np.maximum(ft,0.0,out=ft); np.minimum(ft,0.85,out=ft)
+                    fcr+=(fog_col[0]-fcr)*ft; fcg+=(fog_col[1]-fcg)*ft; fcb+=(fog_col[2]-fcb)*ft
+                fpts=scr[F[idx]]; fli=flen[idx]
+                fci=fcr.astype(int); fcj=fcg.astype(int); fck=fcb.astype(int)
+                for j,k in enumerate(idx):
+                    pts=fpts[j,:fli[j]]
+                    fc=(int(fci[j]),int(fcj[j]),int(fck[j]))
+                    if m.alpha>0.0:
+                        apolys.append((depth[j],pts,fc,int(255*m.alpha),outline,ow))
+                    else:
+                        polys.append((depth[j],pts,fc,outline,ow))
+                if mstat:
+                    m._rcache=(skey,pkey,polys[mmark[0]:],apolys[mmark[1]:],
+                               labels[mmark[2]:],cam)
             if not allcam: continue
             cam_all=np.vstack(allcam); cen=cam_all.mean(axis=0)
             if cen[2]>0.05:
@@ -6877,16 +9250,33 @@ class ShipRenderer:
                     if hc[2]>0.05:
                         hx=cx+focal*hc[0]/hc[2]; hy=cy-focal*hc[1]/hc[2]
                         leaders.append(((pcx,pcy),(hx,hy)))
-        polys.sort(key=lambda t:t[0],reverse=True)
+        polys.sort(key=itemgetter(0),reverse=True)
         for _,pts,fc,outline,ow in polys:
             if len(pts)>=3:
                 try:
                     pygame.draw.polygon(surf,fc,pts)
                     if outline is not None: pygame.draw.polygon(surf,outline,pts,ow)
                 except Exception: pass
+        # translucent pass: water slab, bubble columns, net panels, ping cones
+        # (Submarine.py apolys port) -- blended over the opaque scene
+        if apolys:
+            asurf=getattr(self,"_asurf",None)
+            if asurf is None or asurf.get_size()!=(rect.w,rect.h):
+                asurf=pygame.Surface((rect.w,rect.h),pygame.SRCALPHA); self._asurf=asurf
+            else: asurf.fill((0,0,0,0))
+            apolys.sort(key=itemgetter(0),reverse=True)
+            for _,pts,fc,al,outline,ow in apolys:
+                if len(pts)<3: continue
+                try:
+                    rel=[(p[0]-rect.x,p[1]-rect.y) for p in pts]
+                    pygame.draw.polygon(asurf,(fc[0],fc[1],fc[2],al),rel)
+                    if outline is not None:
+                        pygame.draw.polygon(asurf,(outline[0],outline[1],outline[2],al),rel,ow)
+                except Exception: pass
+            surf.blit(asurf,(rect.x,rect.y))
         glow=float(np.max(firing_glow)) if len(firing_glow) else 0.0
         inj=float(np.max(injection)) if injection is not None and len(injection) else 0.0
-        fire_points.sort(key=lambda t:t[0],reverse=True)
+        fire_points.sort(key=itemgetter(0),reverse=True)
         for _,fpx,fpy,crad in fire_points:
             if inj>0.05: draw_injection(surf,fpx,fpy,crad,inj)
             if glow>0.05: draw_combustion(surf,fpx,fpy,crad,glow)
@@ -6894,36 +9284,78 @@ class ShipRenderer:
             pygame.draw.line(surf,(255,210,120),a,b,1)
             pygame.draw.circle(surf,(255,210,120),(int(b[0]),int(b[1])),5,1)
         if show_labels and label_font:
-            labels.sort(key=lambda t:t[0])
-            used=[]
-            for _,(lxx,lyy),text,tag in labels:
-                ly2=lyy
-                for uy in used:
-                    if abs(ly2-uy)<16: ly2=uy+16
-                used.append(ly2)
-                _label(surf,label_font,text,(lxx,ly2),accent=(tag=="active" or tag=="detail"))
+            labels.sort(key=itemgetter(0))
+            if self.edge_labels and self.view=="full" and len(labels)>4:
+                # edge-column leaders (Submarine.py): part labels pin to the
+                # view margins on their own rows, leader ticks point back;
+                # the active/detail label stays glued to its anchor
+                edge=[l for l in labels if l[3] not in ("active","detail")]
+                hot=[l for l in labels if l[3] in ("active","detail")]
+                for side,items in ((rect.x+8,[l for l in edge if l[1][0]<rect.centerx]),
+                                   (rect.right-8,[l for l in edge if l[1][0]>=rect.centerx])):
+                    items.sort(key=lambda t:t[1][1])
+                    step=(rect.h-96)/max(1,len(items)); yy=rect.y+48.0
+                    for _,(lxx,lyy),text,tag in items:
+                        ty=clamp(yy,rect.y+28,rect.y+rect.h-28)
+                        tw=label_font.size(text)[0]
+                        lx=side if side<rect.centerx else side-tw-8
+                        tx=lx+tw+4 if side<rect.centerx else lx-4
+                        pygame.draw.line(surf,(120,150,190),
+                            (int(lxx),int(lyy)),(int(tx),int(ty+7)),1)
+                        pygame.draw.circle(surf,(120,150,190),
+                            (int(lxx),int(lyy)),2)
+                        _label(surf,label_font,text,(lx,ty))
+                        yy+=max(17.0,step)
+                for _,pos,text,tag in hot:
+                    _label(surf,label_font,text,pos,accent=True)
+            else:
+                used=[]
+                for _,(lxx,lyy),text,tag in labels:
+                    ly2=lyy
+                    for uy in used:
+                        if abs(ly2-uy)<16: ly2=uy+16
+                    used.append(ly2)
+                    _label(surf,label_font,text,(lxx,ly2),accent=(tag=="active" or tag=="detail"))
         if interactive and mouse_pos is not None:
             mxp,myp=mouse_pos; best,bestd=None,1e18
             for pi,pcx,pcy,rad,depth,tag in screeninfo:
                 if tag=="pending": continue
                 if math.hypot(mxp-pcx,myp-pcy)<=rad and depth<bestd: bestd,best=depth,pi
             self.hovered=best
+        self._last_screeninfo=screeninfo   # part anchors (blueprint balloons)
         surf.set_clip(clip)
 
 # ============================================================================
-# SECTION 15 -- APPLICATION (9 tabs)
+# SECTION 15 -- APPLICATION (12 tabs)
 # ============================================================================
 
 VIEW_ROT_SCALE=0.020
 
 class App:
-    MODES=["ship","engine","hatchery","cruise","map","ops","innov","company","quota"]
+    MODES=["ship","engine","hatchery","farm","energy","cruise","map","ops","innov","company","quota","spec"]
     MODE_NAME={"ship":"SHIP  (whole vessel)","engine":"ENGINE  (rotary H2 engine)",
-               "hatchery":"HATCHERY  (shrimp production)","cruise":"CRUISE  (nursery transit)",
+               "hatchery":"HATCHERY  (shrimp production)","farm":"FARM  (drone shrimp herding)",
+               "energy":"ENERGY  (free-fuel chain)",
+               "cruise":"CRUISE  (nursery transit)",
                "map":"MAP  (global seasonal routes)","ops":"OPS  (operation plan)",
-               "innov":"INNOVATIONS  (14 upgrades)",
+               "innov":"INNOVATIONS  (16 upgrades)",
                "company":"COMPANY  (business & operations)",
-               "quota":"QUOTA  (fisheries management)"}
+               "quota":"QUOTA  (fisheries management)",
+               "spec":"SPEC  (manufacturing sheet)"}
+    MODE_BLURB={
+        "ship":"semi-submersible pentamaran hatchery-nursery -- Cat-5 by shape",
+        "engine":"rotary H2 core: sunlight + seawater -> electricity, $0 fuel",
+        "hatchery":"200,000 broodstock -> 300B juveniles/yr, live pipeline",
+        "farm":"multi-thread reel + fish-dog drones herd the school to the net",
+        "energy":"sun + sea -> thrust: every watt accounted, $0 fuel",
+        "cruise":"solar + wind + wave transit -- free fuel, ongoing operation",
+        "map":"12-vessel fleet hits every seasonal nursery window worldwide",
+        "ops":"seed -> grow -> herd -> harvest -> rest: the ranch cycle",
+        "innov":"16 upgrades: OTEC, biofloc, DNA recapture, AI autonomy",
+        "company":"$750M/vessel -> $856B fleet revenue, 76M fed free",
+        "quota":"65% DNA-verified recapture, EEZ-licensed biomass ownership",
+        "spec":"per-part drawing record + manufacturing route, live state",
+    }
     LEFT_PANEL_W=220; RIGHT_PANEL_W=352; TOP_BAR_H=36; BOTTOM_BAR_H=86
 
     def __init__(self):
@@ -6947,28 +9379,74 @@ class App:
         except pygame.error:
             pass
         try:
-            self.screen=pygame.display.set_mode((self.W,self.H))
+            self.screen=pygame.display.set_mode((self.W,self.H),pygame.RESIZABLE)
         except pygame.error:
             self.W,self.H=1024,768
-            self.screen=pygame.display.set_mode((self.W,self.H))
+            self.screen=pygame.display.set_mode((self.W,self.H),pygame.RESIZABLE)
         self.fullscreen=False
         self.clock=pygame.time.Clock()
-        self.font=pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",14)
-        self.fs=pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",12)
-        self.fb=pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",20,bold=True)
-        self.fbig=pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",30,bold=True)
-        self.fmicro=pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",11)
-        self._ship_rend=None; self._eng_rend=None; self._hatch_rend=None
+        # _CFont memoised proxies (SE.py base design): the HUD re-renders the
+        # same strings every frame, so each hit is a dict lookup, not a TTF
+        # rasterisation pass.
+        self.font=_CFont(pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",14))
+        self.fs=_CFont(pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",12))
+        self.fb=_CFont(pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",20,bold=True))
+        self.fbig=_CFont(pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",30,bold=True))
+        self.fmicro=_CFont(pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace",11))
+        self._ship_rend=None; self._eng_rend=None; self._hatch_rend=None; self._farm_rend=None
         self.pt=MarinePowertrain(); self.voyage=Voyage()
         self.mode="ship"; self.ang={}
         self.firing_glow=np.zeros(DIMS["chambers"]); self.injection=np.zeros(DIMS["chambers"])
         self.show_labels=True; self.show_help=False; self.show_info=False; self.show_checklist=False
         self.info_scroll=0; self._info_sections=None
         self.company_scroll=0; self.quota_scroll=0
+        self.blueprint=False          # B: blueprint linework + dim callouts
+        self.paused=False             # P: freeze model animation
+        self.view_speed=1.0           # -/= scales preview animation
+        self.pressed_pos=None         # click-vs-drag anchor (<6px = click)
         self.dragging=False; self.panning=False; self.running=True; self.bg=None
         self._preview_hitboxes={}; self._mode_hitboxes={}; self._part_list_hitboxes={}
+        self._toggles={}              # topbar chip hitboxes (BP/ROT/PAUSE)
+        self._bp_cache={}             # blueprint grid sprites
+        # SPEC sheet state (engine rows first, matching draw_specsheet groups)
+        self._flat_parts=None         # lazy: eng+ship+hatch+farm parts, MFG attached
+        self._spec_groups=None
+        self.spec_sel=0
+        self.spec_page=0              # 0 drawing record, 1 live detail page
+        self.spec_scroll=0
+        self._spec_rows=[]; self._spec_hitboxes={}
+        self._thumb=None; self._thumb_sel=-1
         self._hatchery_particles=[]
         self._hatchery_anim_t=0.0
+        self._farm_particles=[]
+        self._farm_anim_t=0.0
+        # FARM live state: AI corridor, animated meshes, stage clock, testbench
+        self.farm_pattern="funnel"        # AI corridor: wall/funnel/arc/sweep
+        self._farm_anim=None              # lazily collected anim-tagged meshes
+        self._farm_cycle_t=0.0            # seconds into the drop->recover loop
+        self._farm_phase={}               # drone id -> pipeline bucket
+        self._farm_stage_i=0              # index into FARM_STAGES for the ribbon
+        self._farm_stage_frac=0.0         # progress through the active stage
+        self._farm_hits={}                # corridor chip hitboxes
+        # TESTBENCH sliders (GmansRun-style): (label, HERDING key, lo, hi)
+        self._farm_bench=[("FENCE SPREAD","spread_m",200.0,600.0),
+                          ("SWEEP SPEED","sweep_speed_kn",1.0,4.0),
+                          ("DROP RATE","drop_per_min",4.0,20.0)]
+        self._farm_bench_hit={}           # name -> (track rect, lo, hi, key)
+        self._farm_drag=None              # bench slider being dragged
+        # ENGINE TESTBENCH (SE.py base design): live sliders feed update_demo
+        # -> solve_marine_physics, so the viewer IS the physics bench.
+        self._eng_bench=[("RING POWER","ring",0.0,1.0,"%.2f"),
+                         ("HYD CLAMP","hyd",0.0,1.0,"%.2f"),
+                         ("TRANS GEAR","gear",0.0,float(DIMS["trans_rings"]-1),"%d"),
+                         ("COOLANT","coolant",0.0,1.0,"%.2f")]
+        self._eng_bench_vals={"ring":0.75,"hyd":0.55,"gear":2.0,"coolant":0.55}
+        self._eng_bench_hit={}
+        self._eng_drag=None
+        self._phys=None                   # last solve_marine_physics result
+        self.farm_scroll=0                # FARM stats panel scroll offset
+        self._vignette_cache={}           # viewport vignette sprites
+        self.fps=60.0; self._lowq=False   # dynamic-resolution quality gate
         self._rebuild_bg()
 
     def _rebuild_bg(self):
@@ -7001,6 +9479,13 @@ class App:
             self._hatch_rend=ShipRenderer(build_hatchery_parts,is_engine=False,home_az=0.50,home_el=0.55,home_dist=2.50)
         return self._hatch_rend
     @property
+    def farm_rend(self):
+        if self._farm_rend is None:
+            # pattern arg is read live so corridor chips rebuild the fence
+            self._farm_rend=ShipRenderer(lambda: build_farm_parts(self.farm_pattern),
+                is_engine=False,home_az=0.75,home_el=0.48,home_dist=4.20)
+        return self._farm_rend
+    @property
     def info_sections(self):
         if self._info_sections is None:
             self._info_sections=build_info_sections()
@@ -7008,10 +9493,11 @@ class App:
     def rend(self):
         if self.mode=="engine": return self.eng_rend
         if self.mode=="hatchery": return self.hatch_rend
+        if self.mode=="farm": return self.farm_rend
         return self.ship_rend
 
     def view_rect(self):
-        if self.mode in ("cruise","map","ops","company","quota"):
+        if self.mode in ("cruise","map","ops","company","quota","spec","energy"):
             return pygame.Rect(0,self.TOP_BAR_H,self.W,self.H-self.TOP_BAR_H)
         return pygame.Rect(self.LEFT_PANEL_W+4,self.TOP_BAR_H+4,
             self.W-self.LEFT_PANEL_W-self.RIGHT_PANEL_W-8,
@@ -7021,25 +9507,64 @@ class App:
         r=self.rend()
         for e in pygame.event.get():
             if e.type==pygame.QUIT: self.running=False
+            elif e.type==pygame.VIDEORESIZE and not self.fullscreen:
+                self.W=max(980,e.w); self.H=max(620,e.h)
+                self.screen=pygame.display.set_mode((self.W,self.H),pygame.RESIZABLE)
+                self._rebuild_bg()
             elif e.type==pygame.KEYDOWN: self._key(e)
             elif e.type==pygame.MOUSEBUTTONDOWN:
                 if e.button==1:
+                    self.pressed_pos=e.pos
                     if self._handle_mode_tab_click(e.pos): continue
-                    if self.mode in ("cruise","map","ops","company","quota"): continue
+                    if self._handle_toggle_click(e.pos): continue
+                    if self.mode=="spec":
+                        self._handle_spec_click(e.pos); continue
+                    if self.mode=="farm" and self._handle_farm_click(e.pos): continue
+                    if self.mode=="engine" and self._handle_engine_click(e.pos): continue
+                    if self.mode in ("cruise","map","ops","company","quota","energy"): continue
                     if self._handle_part_list_click(e.pos): continue
                     if self._handle_preview_click(e.pos): continue
                     self.dragging=True
-                    if r.hovered is not None: r.selected=r.hovered
-                    else: r.selected=None
                 elif e.button==3: self.panning=True
-                elif e.button==4: r.zoom_at(0.9,pygame.mouse.get_pos(),self.view_rect())
-                elif e.button==5: r.zoom_at(1.1,pygame.mouse.get_pos(),self.view_rect())
+                elif e.button==4 and self.mode in ("ship","engine","hatchery","farm"):
+                    r.zoom_at(0.9,pygame.mouse.get_pos(),self.view_rect())
+                elif e.button==5 and self.mode in ("ship","engine","hatchery","farm"):
+                    r.zoom_at(1.1,pygame.mouse.get_pos(),self.view_rect())
+            elif e.type==pygame.MOUSEWHEEL:
+                if self.mode=="farm" and pygame.mouse.get_pos()[0]>self.W-self.RIGHT_PANEL_W:
+                    self.farm_scroll=max(0,self.farm_scroll-e.y*34)
+                elif self.mode in ("ship","engine","hatchery","farm"):
+                    r.zoom_at(0.9 if e.y>0 else 1.1,pygame.mouse.get_pos(),self.view_rect())
+                elif self.mode=="spec":
+                    self.spec_scroll=max(0,self.spec_scroll-e.y*34)
+                elif self.show_info:
+                    self.info_scroll=max(0,self.info_scroll-e.y*40)
             elif e.type==pygame.MOUSEBUTTONUP:
-                if e.button==1: self.dragging=False
+                if e.button==1:
+                    # click-vs-drag (V1.17): <6px travel pins the hovered part;
+                    # a real drag only orbits -- no accidental selections.
+                    if (self.pressed_pos is not None and self.mode
+                            in ("ship","engine","hatchery","farm")
+                            and math.hypot(e.pos[0]-self.pressed_pos[0],
+                                           e.pos[1]-self.pressed_pos[1])<6.0
+                            and not self._over_panel(e.pos)):
+                        if r.hovered is not None: r.selected=r.hovered
+                        else: r.selected=None
+                    self.dragging=False; self.pressed_pos=None
+                    if self._farm_drag is not None:
+                        # bench change committed -> rebuild the spread once,
+                        # not per drag pixel
+                        self._farm_drag=None; self._rebuild_farm()
+                    self._eng_drag=None
                 elif e.button==3: self.panning=False
             elif e.type==pygame.MOUSEMOTION:
-                if self.mode not in ("cruise","map","ops","company","quota"):
-                    if self.dragging: r.orbit(e.rel[0],e.rel[1])
+                if self._eng_drag is not None:
+                    self._eng_bench_to(e.pos)
+                elif self._farm_drag is not None:
+                    self._farm_bench_to(e.pos)
+                elif self.mode not in ("cruise","map","ops","company","quota","spec","energy"):
+                    if self.dragging:
+                        r.orbit(e.rel[0],e.rel[1]); r.auto_rotate=False
                     elif self.panning: r.pan_by(e.rel[0],e.rel[1])
 
     def _key(self,e):
@@ -7061,6 +9586,37 @@ class App:
         elif k==pygame.K_l: self.show_labels=not self.show_labels
         elif k==pygame.K_v: self.show_checklist=not self.show_checklist
         elif k==pygame.K_r: r.reset_view()
+        elif k==pygame.K_b and self.mode in ("ship","engine","hatchery","farm"):
+            self.blueprint=not self.blueprint
+        elif k==pygame.K_p and self.mode in ("ship","engine","hatchery","farm"):
+            self.paused=not self.paused
+        elif k==pygame.K_k and self.mode in ("ship","engine","hatchery","farm"):
+            r.auto_rotate=not r.auto_rotate
+        elif k==pygame.K_f and self.mode=="engine":
+            # cycle the ORC working fluid (SE.py base design, F cycles bench)
+            i=FLUID_ORDER.index(self.pt.fluid)
+            self.pt.fluid=FLUID_ORDER[(i+1)%len(FLUID_ORDER)]
+        elif k in (pygame.K_MINUS,pygame.K_UNDERSCORE):
+            self.view_speed=max(0.1,self.view_speed/1.25)
+        elif k in (pygame.K_EQUALS,pygame.K_PLUS):
+            self.view_speed=min(8.0,self.view_speed*1.25)
+        elif k==pygame.K_s and self.mode in ("ship","engine","hatchery","farm"):
+            # SOLO view: isolate the pinned/hovered part, framed; again = back
+            if r.solo is not None: r.solo_clear()
+            else:
+                i=r.selected if r.selected is not None else r.hovered
+                r.solo_set(0 if i is None else i)
+        elif self.mode=="spec" and k in (pygame.K_UP,pygame.K_DOWN):
+            step=1 if k==pygame.K_DOWN else -1
+            self.spec_sel=(self.spec_sel+step)%max(1,len(self._flat_parts or [0]))
+        elif self.mode=="spec" and k in (pygame.K_RETURN,pygame.K_d):
+            self.spec_page=(self.spec_page+1)%2
+        elif k in (pygame.K_UP,pygame.K_DOWN) and self.mode in ("ship","engine","hatchery","farm"):
+            d=-1 if k==pygame.K_UP else 1
+            if r.solo is not None: r.solo_step(d)
+            else:
+                i=r.selected if r.selected is not None else -1
+                r.selected=(i+d)%len(r.parts)
         elif k==pygame.K_1 and self.mode not in ("cruise","map","ops","innov","company","quota"): r.set_view("full")
         elif k==pygame.K_2 and self.mode not in ("cruise","map","ops","innov","company","quota"): r.set_view("exploded")
         elif k==pygame.K_3 and self.mode not in ("cruise","map","ops","innov"): r.set_view("assembly")
@@ -7085,7 +9641,7 @@ class App:
 
     def _advance_angles(self,dt):
         a=self.ang
-        for key in ("ring","core","gen","fly","turbo","steam","prop","genring","default","rotor","tunnelturb"):
+        for key in ("ring","core","gen","fly","turbo","steam","prop","genring","default","rotor","tunnelturb","droneprop"):
             a.setdefault(key,0.0)
         if self.mode in ("engine","cruise"):
             w=VIEW_ROT_SCALE*2*math.pi/60.0
@@ -7103,6 +9659,9 @@ class App:
         a["rotor"]+=wm_rate*dt
         tt_rate=0.6+self.pt.speed_kn*0.5 if self.mode!="ship" else 3.0
         a["tunnelturb"]+=tt_rate*dt
+        # fish-dog prop wash + carousel index rate (FARM tab)
+        a["droneprop"]+=(6.0 if self.mode=="farm" else 2.0)*dt
+        if self.mode=="farm": a["genring"]+=0.6*dt
 
     def _compute_firing(self,active):
         glow=np.zeros(DIMS["chambers"]); inj=np.zeros(DIMS["chambers"])
@@ -7120,25 +9679,56 @@ class App:
     def update(self,dt):
         self.rend().tick(dt)
         if self.mode=="engine":
-            self.pt.update_demo(dt); self._compute_firing(True)
+            pt=self.pt
+            pt.update_demo(dt,self._eng_bench_vals); self._compute_firing(True)
+            # solve_marine_physics on the demo kinematics: the bench IS the
+            # engine. Sliders move ring power / hyd clamp / shifter / coolant,
+            # the solver turns them into pressure, AFR, torque, heat and
+            # recovered power for the stats panel.
+            gr=trans_ratios()[min(int(self._eng_bench_vals["gear"]),
+                                  len(trans_ratios())-1)]
+            k={"piston":pt.ring_rpm,"core":pt.gen_rpm,
+               "ep":self._eng_bench_vals["ring"],"c1":pt.clutch1_engage,
+               "bind":pt.trans_bind,"super":pt.sc_boost,
+               "gear":int(self._eng_bench_vals["gear"]),"gr":gr,
+               "lock":pt.trans_bind}
+            self._phys=solve_marine_physics(
+                k,DIMS["chambers"],pt.block_temp_c,
+                self._eng_bench_vals["coolant"],
+                self._eng_bench_vals["hyd"],pt.genset_on,
+                1.0-pt.clutch1_engage,boiler_c=pt.boiler_c,
+                fluid=pt.fluid,fluid_health=pt.fluid_life)
+            self._compute_firing(True)
         elif self.mode=="hatchery":
             self.pt._update_hatchery(dt*0.5,sun=0.6)
             self.pt._update_ai(dt*0.5,dt,0.6,0.2)
             self._compute_firing(False)
-            self._update_hatchery_particles(dt)
+            if not self.paused: self._update_hatchery_particles(dt*self.view_speed)
+        elif self.mode=="farm":
+            self._compute_firing(False)
+            if not self.paused:
+                self._update_farm_particles(dt*self.view_speed)
+                self._update_farm_anim(dt*self.view_speed)
+        elif self.mode=="energy":
+            # dashboard runs the live powertrain on a fixed sunny-day demo
+            # driver so every flow arrow has a real number behind it
+            self.pt.update(dt*4.0,sun=0.85,sea_state=0.25,hour_of_day=13.0)
+            self._compute_firing(self.pt.genset_on)
         elif self.mode in ("cruise","map","ops","company","quota"):
             if not self.voyage.finished:
                 dt_v=self.voyage.update(dt,self.pt)
                 remaining=dt_v; step_max=120.0
                 while remaining>1e-6:
                     step=min(step_max,remaining)
-                    self.pt.update(step,self.voyage.sun,self.voyage.sea_state)
+                    self.pt.update(step,self.voyage.sun,self.voyage.sea_state,
+                                   self.voyage.hour_of_day)
                     self.voyage.advance_distance(self.pt.speed_kn,step)
                     remaining-=step
             self._compute_firing(self.pt.genset_on)
         else:
             self._compute_firing(False)
-        self._advance_angles(dt)
+        if not self.paused:
+            self._advance_angles(dt*self.view_speed)
         r=self.rend(); mp=pygame.mouse.get_pos()
         over_view=self.view_rect().collidepoint(mp) and not self._over_panel(mp)
         if self.mode not in ("cruise","map","ops") and over_view and not (self.dragging or self.panning):
@@ -7148,15 +9738,42 @@ class App:
 
     def _over_panel(self,mp):
         if self.show_info or self.show_help or self.show_checklist: return True
-        if mp[0]<self.LEFT_PANEL_W+4 and self.mode not in ("cruise","map","ops"): return True
-        if mp[0]>self.W-self.RIGHT_PANEL_W-4 and self.mode not in ("cruise","map","ops"): return True
-        if mp[1]>self.H-self.BOTTOM_BAR_H-4 and self.mode not in ("cruise","map","ops"): return True
+        if mp[0]<self.LEFT_PANEL_W+4 and self.mode not in ("cruise","map","ops","spec"): return True
+        if mp[0]>self.W-self.RIGHT_PANEL_W-4 and self.mode not in ("cruise","map","ops","spec"): return True
+        if mp[1]>self.H-self.BOTTOM_BAR_H-4 and self.mode not in ("cruise","map","ops","spec"): return True
         if mp[1]<self.TOP_BAR_H: return True
         return False
 
     def _handle_mode_tab_click(self,pos):
         for mode,rect in self._mode_hitboxes.items():
             if rect.collidepoint(pos): self.mode=mode; return True
+        return False
+
+    def _handle_toggle_click(self,pos):
+        """Footer chip toggles (BP/ROT/PAUSE). Only armed in 3D modes."""
+        if self.mode not in ("ship","engine","hatchery","farm"): return False
+        hit=self._preview_hitboxes; r=self.rend()
+        if hit.get("blueprint") and hit["blueprint"].collidepoint(pos):
+            self.blueprint=not self.blueprint; return True
+        if hit.get("rotate") and hit["rotate"].collidepoint(pos):
+            r.auto_rotate=not r.auto_rotate; return True
+        if hit.get("pause") and hit["pause"].collidepoint(pos):
+            self.paused=not self.paused; return True
+        return False
+
+    def _handle_spec_click(self,pos):
+        """SPEC sheet: click a row to pin a part; page tab switches pages."""
+        for key,rect in self._spec_hitboxes.items():
+            if not rect.collidepoint(pos): continue
+            if key=="page0": self.spec_page=0; return True
+            if key=="page1": self.spec_page=1; return True
+            if key=="thumb" and self._flat_parts:
+                i=self.spec_sel%len(self._flat_parts)
+                mode,pi,_=self._flat_parts[i]
+                self.mode=mode; self.rend().selected=pi
+                self.rend().solo_set(pi); return True
+            if isinstance(key,int):
+                self.spec_sel=key; return True
         return False
 
     def _handle_part_list_click(self,pos):
@@ -7196,6 +9813,8 @@ class App:
         elif self.mode=="innov": self.draw_innov()
         elif self.mode=="company": self.draw_company()
         elif self.mode=="quota": self.draw_quota()
+        elif self.mode=="spec": self.draw_specsheet()
+        elif self.mode=="energy": self.draw_energy()
         else: self.draw_preview()
         self.draw_topbar()
         if self.show_help: self.draw_help()
@@ -7207,11 +9826,12 @@ class App:
         pygame.draw.rect(self.screen,C_PANEL,(0,0,self.W,self.TOP_BAR_H))
         pygame.draw.line(self.screen,C_PANEL_HI,(0,self.TOP_BAR_H),(self.W,self.TOP_BAR_H),1)
         self.screen.blit(self.fb.render("LEVIATHAN",True,C_ACCENT),(12,6))
-        self.screen.blit(self.font.render("TIGER LEVIATHAN-CLASS  |  "+self.MODE_NAME[self.mode],True,C_TEXT),(172,10))
+        self.screen.blit(self.font.render(self.MODE_NAME[self.mode],True,C_TEXT),(160,8))
+        self.screen.blit(self.fmicro.render(self.MODE_BLURB[self.mode],True,C_TEXT_DIM),(162,24))
         self._mode_hitboxes={}; tab_y=4; tab_h=28
-        # Center the mode tabs in the top bar
+        # Right-align the mode tabs so 12 tabs never collide with the title
         total_tab_w=sum(self.fs.size(m.upper())[0]+24+6 for m in self.MODES)-6
-        tab_x=max(200,(self.W-total_tab_w)//2)
+        tab_x=max(560,self.W-total_tab_w-12)
         for mode in self.MODES:
             label=mode.upper(); active=(self.mode==mode)
             tw=self.fs.size(label)[0]+24
@@ -7228,7 +9848,7 @@ class App:
         """Update animated particles for the hatchery breeding pipeline."""
         self._hatchery_anim_t+=dt
         rect=self.view_rect()
-        cx=rect.x+rect.w/2.0; cy=rect.y+rect.h/2.0
+        cy=rect.y+rect.h/2.0
         # Spawn new particles flowing through the pipeline
         # Stages: eggs (orange) -> nauplii (yellow) -> PL20 (cyan) -> juveniles (green) -> release (red)
         if len(self._hatchery_particles)<120 and self._hatchery_anim_t>0.02:
@@ -7263,7 +9883,6 @@ class App:
         """Draw animated breeding pipeline overlay on the hatchery view."""
         # Draw flowing particles
         for p in self._hatchery_particles:
-            alpha=int(255*p["life"])
             col=(p["color"][0],p["color"][1],p["color"][2])
             try:
                 pygame.draw.circle(self.screen,col,
@@ -7328,23 +9947,1054 @@ class App:
             "20-YR SIM: 160 stress events, 0 failures, $8.5T cumulative net, ZERO-FAILURE CONFIRMED",
             True,C_ACCENT),(rect.x+12,sy2+62))
 
+    def _update_farm_particles(self,dt):
+        """Shrimp-speck particles funneling into the net + drone blips sweeping."""
+        self._farm_anim_t+=dt
+        rect=self.view_rect()
+        # net mouth target point (right of centre, lower half)
+        nx=rect.x+rect.w*0.78; ny=rect.y+rect.h*0.60
+        if len(self._farm_particles)<140 and self._farm_anim_t>0.015:
+            self._farm_anim_t=0.0
+            kind="drone" if random.random()<0.18 else "shrimp"
+            if kind=="drone":
+                self._farm_particles.append({
+                    "x":rect.x+rect.w*random.uniform(0.10,0.30),
+                    "y":rect.y+rect.h*random.uniform(0.25,0.85),
+                    "vx":random.uniform(18,30),"vy":random.uniform(-4,4),
+                    "life":1.0,"kind":"drone",
+                    "color":C_DRONE_HI,"size":random.uniform(3,4.5),
+                    "phase":random.uniform(0,6.28)})
+            else:
+                # shrimp specks start scattered, converge toward the net mouth
+                self._farm_particles.append({
+                    "x":rect.x+rect.w*random.uniform(0.06,0.40),
+                    "y":rect.y+rect.h*random.uniform(0.15,0.95),
+                    "vx":random.uniform(55,85),"vy":0.0,
+                    "life":1.0,"kind":"shrimp",
+                    "color":C_SCHOOL,"size":random.uniform(1.5,3.0),
+                    "phase":random.uniform(0,6.28)})
+        alive=[]
+        for p in self._farm_particles:
+            p["x"]+=p["vx"]*dt
+            if p["kind"]=="shrimp":
+                # funnel: steer toward the net mouth, darting sideways as they go
+                p["vy"]=(ny-p["y"])*0.55
+                p["y"]+=p["vy"]*dt+math.sin(p["phase"]+self._farm_anim_t*4)*0.4
+                p["life"]-=dt*0.06
+                if p["x"]>=nx: p["life"]=0.0      # caught at the mouth
+            else:
+                p["y"]+=p["vy"]*dt+math.sin(p["phase"]+self._farm_anim_t*2)*0.3
+                p["life"]-=dt*0.08
+                if p["x"]>=rect.x+rect.w*0.62: p["life"]=0.0
+            if p["life"]>0 and p["x"]<rect.x+rect.w-14: alive.append(p)
+        self._farm_particles=alive
+
+    # ---- FARM live animation: the drones physically run drop->recover -------
+    FARM_CYCLE_S=36.0            # one drone's full drop->recover loop (sim-sec)
+
+    def _farm_disp(self,x,y,z):
+        """Real-metres farm-scene point -> display coords (post recentre)."""
+        return np.array([_farm(x-12.0),_farm(y),_farm(z)])
+
+    def _rebuild_farm(self):
+        """Rebuild the spread once after a corridor chip or bench change."""
+        self._farm_rend=None; self._farm_anim=None
+        self._flat_parts=None; self._spec_groups=None  # SPEC rows hold old Part refs
+
+    def _collect_farm_anim(self):
+        # collect from the consolidated render meshes: merged anim meshes
+        # (one per drone pose) are what render() actually draws
+        self._farm_anim=[]
+        for p in self.farm_rend.parts:
+            rm=getattr(p,"_rmeshes",None)
+            if rm is None:
+                rm=_consolidate_meshes(p.meshes); p._rmeshes=rm
+            for m in rm:
+                if m.anim is not None: self._farm_anim.append(m)
+        self._farm_ndrones=max(1,len({m.anim["i"] for m in self._farm_anim
+                                      if m.anim["kind"]=="drone"}))
+
+    def _farm_drone_pose(self,i,c):
+        """(x,y,z,heading) real metres for fish-dog i at cycle fraction c.
+
+        Path: carousel underside -> splash-damp exit -> powered dive to its
+        fence slot -> hold while the fence advances -> close onto the mouth
+        -> scoop cradle.  Positions match the built geometry's scene frame."""
+        n=self._farm_ndrones
+        fx,fy,fz,fh=herd_fence_slot(self.farm_pattern,i,n)
+        ch=i%HERDING["drop_chutes"]; side=-1.0 if ch<2 else 1.0
+        spread=3.5+(ch%2)*3.0
+        top=(-21.5,6.2,side*spread)      # carousel underside, armed
+        splash=(-15.5,0.2,side*spread)   # chute exit at the waterline
+        cradle=(-14.0,0.4,-side*3.0)     # scoop cradle on the recovery rail
+        mouth=(21.0,-8.5,fz*0.15)        # net mouth
+        # bench sliders are real: drop rate compresses/stretches the drop
+        # phase, sweep speed sets how far the fence advances while holding
+        de=0.10*12.0/max(1.0,HERDING["drop_per_min"])
+        if c<de:                         # DROP the chute
+            u=c/max(1e-6,de); a,b=top,splash
+        elif c<de+0.16:                  # powered DIVE to the slot
+            u=(c-de)/0.16; a,b=splash,(fx,fy,fz)
+        elif c<0.62:                     # SWEEP/FENCE: hold slot, advance
+            u=(c-de-0.16)/max(1e-6,0.62-de-0.16)
+            return (fx+HERDING["sweep_speed_kn"]*1.6*u,fy,fz,fh)
+        elif c<0.80:                     # FUNNEL: converge on the mouth
+            u=(c-0.62)/0.18; a,b=(fx+HERDING["sweep_speed_kn"]*1.6,fy,fz),mouth
+        elif c<0.94:                     # RECOVER: mouth -> cradle, rising
+            u=(c-0.80)/0.14; a,b=mouth,cradle
+        else:                            # chute-back turnaround
+            return (cradle[0],cradle[1],cradle[2],math.pi/2.0)
+        e=u*u*(3.0-2.0*u)                # smoothstep ease
+        x=a[0]+(b[0]-a[0])*e; y=a[1]+(b[1]-a[1])*e; z=a[2]+(b[2]-a[2])*e
+        dx=b[0]-a[0]; dz=b[2]-a[2]
+        hd=fh if dx*dx+dz*dz<1e-4 else math.atan2(dx,dz)
+        return (x,y,z,hd)
+
+    def _update_farm_anim(self,dt):
+        """Per-frame pose update for every anim-tagged farm mesh.  This is the
+        actual farm simulation the ribbon reports: real positions, not a timer."""
+        if self._farm_anim is None: self._collect_farm_anim()
+        t=self._farm_cycle_t=(self._farm_cycle_t+dt)%self.FARM_CYCLE_S
+        self._farm_phase={}               # drone id -> pipeline bucket (live counts)
+        # stage machine for the ribbon (dwell-weighted like a real set)
+        total=sum(s[2] for s in FARM_STAGES); tt=(t/self.FARM_CYCLE_S)*total
+        acc=0.0
+        for i,s in enumerate(FARM_STAGES):
+            prev=acc; acc+=s[2]
+            if tt<acc:
+                self._farm_stage_i=i
+                self._farm_stage_frac=(tt-prev)/max(1e-6,s[2]); break
+        for m in self._farm_anim:
+            an=m.anim; kind=an["kind"]
+            if kind=="drone":
+                c=(t/self.FARM_CYCLE_S+an["i"]/self._farm_ndrones)%1.0
+                de=0.10*12.0/max(1.0,HERDING["drop_per_min"])
+                self._farm_phase[an["i"]]=(
+                    0 if c<de else 1 if c<de+0.16 else 2 if c<0.62
+                    else 3 if c<0.80 else 4 if c<0.94 else 5)
+                x,y,z,hd=self._farm_drone_pose(an["i"],c)
+                lp=an["lp"]
+                m.pivot=self._farm_disp(x,y,z)+(rot_y(hd)@lp.reshape(3,1)).ravel()*FARM_DISP
+                m.tilt=(0.0,hd)
+            elif kind=="auv":
+                th=an["w"]*t*8.0+an["ph"]; c0=an["c"]; R=an["r"]
+                x=c0[0]+R*math.cos(th); y=c0[1]; z=c0[2]+R*math.sin(th)
+                hd=math.atan2(-math.sin(th),math.cos(th))
+                lp=an["lp"]
+                m.pivot=self._farm_disp(x,y,z)+(rot_y(hd)@lp.reshape(3,1)).ravel()*FARM_DISP
+                m.tilt=(0.0,hd)
+            elif kind=="bubble":
+                frac=(t*an["rate"]+an["phase"])%1.0; p0=an["p0"]
+                m.pivot=np.array([p0[0]-_farm(12.0),p0[1]+an["rise"]*frac,p0[2]])
+            elif kind=="school":
+                p0=an["p0"]
+                drift=_farm(2.0)*((t*an["rate"]*0.04+an["phase"])%1.0-0.5)
+                wob=math.sin(t*3.0+an["phase"]*6.283)*_farm(0.3)
+                m.pivot=np.array([p0[0]-_farm(12.0)+drift,p0[1]+wob,p0[2]])
+            elif kind=="plume":
+                frac=(t*an["rate"]+an["phase"])%1.0; p0=an["p0"]
+                m.pivot=np.array([p0[0]-_farm(12.0)+an["drift"]*frac,
+                                  p0[1]-_farm(0.4)*frac,p0[2]])
+
+    def _handle_farm_click(self,pos):
+        """Corridor chips + testbench sliders inside the FARM viewport."""
+        for pat,rect in self._farm_hits.items():
+            if rect.collidepoint(pos):
+                if pat!=self.farm_pattern:
+                    self.farm_pattern=pat; self._rebuild_farm()
+                return True
+        for name,(rect,key,lo,hi) in self._farm_bench_hit.items():
+            if rect.inflate(6,10).collidepoint(pos):
+                self._farm_drag=name; self._farm_bench_to(pos); return True
+        return False
+
+    def _farm_bench_to(self,pos):
+        """Drag a testbench slider: writes the HERDING value live."""
+        name=self._farm_drag
+        if name is None or name not in self._farm_bench_hit: return
+        rect,key,lo,hi=self._farm_bench_hit[name]
+        frac=clamp((pos[0]-rect.x)/max(1.0,rect.w),0.0,1.0)
+        HERDING[key]=lo+(hi-lo)*frac
+
+    def _handle_engine_click(self,pos):
+        """ENGINE testbench sliders inside the viewport (SE.py base design)."""
+        for name,(rect,key,lo,hi,fmt) in self._eng_bench_hit.items():
+            if rect.inflate(6,10).collidepoint(pos):
+                self._eng_drag=name; self._eng_bench_to(pos); return True
+        return False
+
+    def _eng_bench_to(self,pos):
+        """Drag an engine testbench slider: writes _eng_bench_vals live; the
+        next update_demo + solve_marine_physics tick answers it."""
+        name=self._eng_drag
+        if name is None or name not in self._eng_bench_hit: return
+        rect,key,lo,hi,fmt=self._eng_bench_hit[name]
+        frac=clamp((pos[0]-rect.x)/max(1.0,rect.w),0.0,1.0)
+        self._eng_bench_vals[key]=lo+(hi-lo)*frac
+
+    def _draw_engine_overlay(self,rect):
+        """ENGINE testbench overlay on the 3D view (SE.py base design): live
+        bench sliders + a solved-physics readout strip."""
+        sy2=rect.y+rect.h-78
+        panel(self.screen,rect.x+8,sy2,rect.w-16,70,alpha=200)
+        ph=self._phys or {}
+        stats=[
+            ("CHARGE","%.1f kPa x%.2f"%(ph.get("pressure_kpa",0.0),
+                                        ph.get("pressure_ratio",1.0)),C_H2),
+            ("AFR","%.0f:1  %.1f g/s"%(ph.get("afr",36.0),
+                                       ph.get("fuel_g_s",0.0)),C_TEXT),
+            ("SHAFT","%.0f kW"%ph.get("shaft_kw",0.0),C_ACCENT),
+            ("GENERATOR","%.0f kW"%ph.get("gen_kw",0.0),C_SUN),
+            ("CLUTCH","%.0f Nm  %.0f kW slip"%(ph.get("main_torque_nm",0.0),
+                                              ph.get("slip_heat_kw",0.0)),C_CHAMBER_FIRE),
+            ("ORC","%.0f kW  %s"%(ph.get("orc_kw",0.0),
+                                  ph.get("fluid","AMMONIA")),C_GOOD),
+        ]
+        col_w=(rect.w-32)/len(stats)
+        for i,(lab,val,col) in enumerate(stats):
+            x=int(rect.x+12+i*col_w)
+            self.screen.blit(self.fmicro.render(lab,True,C_TEXT_DIM),(x,sy2+6))
+            self.screen.blit(self.fmicro.render(val,True,col),(x,sy2+20))
+        self._eng_bench_hit={}
+        bw2=int(rect.w*0.30); bx2=rect.x+rect.w-16-bw2
+        self.screen.blit(self.fmicro.render("TESTBENCH (drag)  F fluid",True,C_TEXT_DIM),
+                         (bx2,sy2+36))
+        for i,(lab,key,lo,hi,fmt) in enumerate(self._eng_bench):
+            ty=sy2+48+i*6
+            val=self._eng_bench_vals[key]
+            frac=clamp((val-lo)/max(1e-6,hi-lo),0.0,1.0)
+            tr=pygame.Rect(bx2+86,ty+2,bw2-150,4)
+            pygame.draw.rect(self.screen,C_PANEL_HI,tr)
+            pygame.draw.rect(self.screen,C_ACCENT,(tr.x,tr.y,max(2,int(tr.w*frac)),tr.h))
+            pygame.draw.circle(self.screen,C_TEXT,(tr.x+int(tr.w*frac),tr.y+2),4)
+            self._eng_bench_hit[lab]=(tr,key,lo,hi,fmt)
+            self.screen.blit(self.fmicro.render(lab,True,C_TEXT_DIM),(bx2,ty-2))
+            vtxt=(fmt%val) if key!="gear" else "G%d"%int(round(val))
+            self.screen.blit(self.fmicro.render(vtxt,True,C_ACCENT),
+                             (tr.x+tr.w+6,ty-2))
+        # left column: thermal + fuel status
+        lx=rect.x+14
+        pt=self.pt
+        lines=["BLOCK %.0fC / BOILER %.0fC / PCM %.0fC"%(pt.block_temp_c,pt.boiler_c,pt.pcm_c),
+               "STATUS %s  derate %.0f%%"%(ph.get("status","NORMAL"),
+                                           ph.get("derate",1.0)*100),
+               "FLUID %s  life %.0f%%  svc %d"%(pt.fluid,pt.fluid_life*100,pt.fluid_services)]
+        for i,txt in enumerate(lines):
+            self.screen.blit(self.fmicro.render(txt,True,C_TEXT_DIM),(lx,sy2+38+i*11))
+
+    def _draw_farm_overlay(self,rect):
+        """Herding-pipeline overlay on the FARM view: stage ribbon + live stats."""
+        # herded specks + drone blips
+        for p in self._farm_particles:
+            col=p["color"]
+            try:
+                pygame.draw.circle(self.screen,col,(int(p["x"]),int(p["y"])),int(p["size"]))
+                if p["kind"]=="drone":
+                    pygame.draw.circle(self.screen,col,(int(p["x"]),int(p["y"])),
+                                       int(p["size"]*2.4),1)
+            except (ValueError,TypeError,OverflowError): pass
+        # stage ribbon across the top -- driven by the live drone cycle, with
+        # a progress bar under the active stage (Submarine.py state-ribbon)
+        stage_colors=[C_GANTRY,C_CHUTE,C_DRONE,C_BUBBLE,C_PING,C_SCHOOL,C_COD,C_MAG]
+        n_stages=len(FARM_STAGES)
+        sx=rect.x+24; sy=rect.y+40; gap=(rect.w-48)/n_stages
+        for i,(name,_,dwell) in enumerate(FARM_STAGES):
+            x=int(sx+i*gap); col=stage_colors[i%len(stage_colors)]
+            active=(i==self._farm_stage_i)
+            bw=self.fs.size(name)[0]+12
+            panel(self.screen,x,sy,bw,20,alpha=235 if active else 170)
+            if active: pygame.draw.rect(self.screen,col,(x,sy,bw,20),1)
+            self.screen.blit(self.fs.render(name,True,
+                col if active else _mix(col,C_TEXT_DIM,0.45)),(x+6,sy+4))
+            if active:
+                pw=max(2,int(bw*self._farm_stage_frac))
+                pygame.draw.rect(self.screen,col,(x,sy+21,pw,2))
+            if i<n_stages-1:
+                ax1=x+bw+1; ax2=int(sx+(i+1)*gap); ay=sy+10
+                pygame.draw.line(self.screen,C_TEXT_DIM,(ax1,ay),(ax2-2,ay),1)
+                pygame.draw.polygon(self.screen,C_TEXT_DIM,
+                    [(ax2-2,ay-3),(ax2-2,ay+3),(ax2+1,ay)])
+        # AI corridor chips -- click to rebuild the fence formation
+        self._farm_hits={}
+        chx=rect.x+rect.w-24; chy=sy+26
+        for pat in ("wall","funnel","arc","sweep"):
+            lbl=FARM_PATTERNS[pat]["label"]; tw=self.fs.size(lbl)[0]+16
+            chx-=tw+6; active=(pat==self.farm_pattern)
+            crect=pygame.Rect(chx,chy,tw,18)
+            panel(self.screen,chx,chy,tw,18,alpha=235 if active else 165)
+            pygame.draw.rect(self.screen,C_ACCENT if active else C_PANEL_HI,crect,1)
+            self.screen.blit(self.fs.render(lbl,True,
+                C_ACCENT if active else C_TEXT_DIM),(chx+8,chy+4))
+            self._farm_hits[pat]=crect
+        chx-=self.fs.size("CORRIDOR:")[0]+10
+        self.screen.blit(self.fs.render("CORRIDOR:",True,C_TEXT_DIM),(chx,chy+4))
+        # live stats strip at the bottom of the view + testbench sliders
+        sy2=rect.y+rect.h-96
+        panel(self.screen,rect.x+8,sy2,rect.w-16,88,alpha=200)
+        stats=[
+            ("FISH DOGS","%d + %d AUV"%(HERDING["tethered_drones"],HERDING["free_auvs"]),C_DRONE_HI),
+            ("DROP RATE","%.0f/min"%HERDING["drop_per_min"],C_CHUTE),
+            ("FENCE","%.0f m wide"%HERDING["spread_m"],C_BUBBLE),
+            ("FUNNEL","%.0f:1"%herd_funnel_ratio(),C_PING),
+            ("EFFICIENCY","%.0f%%"%HERDING["herd_eff_pct"],C_SCHOOL),
+            ("CATCH","%.0f t/set"%HERDING["catch_t_per_set"],C_COD),
+        ]
+        col_w=(rect.w-32)/len(stats)
+        for i,(lab,val,col) in enumerate(stats):
+            x=int(rect.x+12+i*col_w)
+            self.screen.blit(self.fmicro.render(lab,True,C_TEXT_DIM),(x,sy2+6))
+            self.screen.blit(self.fs.render(val,True,col),(x,sy2+22))
+        self.screen.blit(self.fmicro.render(
+            "SWEEP %.0f ha/h | %.0f t/day | LANDED %.0f%% | CONC %.0fx | BYCATCH -%.0f%%"%(
+                herd_sweep_area_ha_per_h(),herd_catch_t_per_day(),
+                herd_located_to_landed_eff()*100.0,
+                HERDING["concentration_x"],HERDING["bycatch_reduction_pct"]),
+            True,C_GOOD),(rect.x+12,sy2+48))
+        self.screen.blit(self.fmicro.render(
+            "CYCLE: release -> grow -> herd+harvest -> rest+rotate",
+            True,C_ACCENT),(rect.x+12,sy2+62))
+        # TESTBENCH: drag the sliders -- writes HERDING live, rebuilds on release
+        self._farm_bench_hit={}
+        bw2=int(rect.w*0.30); bx2=rect.x+rect.w-16-bw2
+        self.screen.blit(self.fmicro.render("TESTBENCH (drag)",True,C_TEXT_DIM),
+                         (bx2,sy2+44))
+        for i,(lab,key,lo,hi) in enumerate(self._farm_bench):
+            ty=sy2+56+i*10
+            val=HERDING[key]; frac=clamp((val-lo)/max(1e-6,hi-lo),0.0,1.0)
+            tr=pygame.Rect(bx2+86,ty+2,bw2-150,4)
+            pygame.draw.rect(self.screen,C_PANEL_HI,tr)
+            pygame.draw.rect(self.screen,C_ACCENT,(tr.x,tr.y,max(2,int(tr.w*frac)),tr.h))
+            pygame.draw.circle(self.screen,C_TEXT,(tr.x+int(tr.w*frac),tr.y+2),4)
+            self._farm_bench_hit[lab]=(tr,key,lo,hi)
+            self.screen.blit(self.fmicro.render(lab,True,C_TEXT_DIM),(bx2,ty-1))
+            fmt="%.0f" if hi>50 else "%.2f"
+            self.screen.blit(self.fmicro.render(fmt%val,True,C_ACCENT),
+                             (tr.x+tr.w+6,ty-1))
+        # zone-rotation strip: 3 ranching zones, one lit per season phase
+        zy=rect.y+92; zx=rect.x+24; zw=(rect.w-48)/FARM_CYCLE["zones"]
+        t_sec=pygame.time.get_ticks()*0.001
+        season=FARM_CYCLE["phases"][int(t_sec/6.0)%len(FARM_CYCLE["phases"])][1]
+        for zi in range(FARM_CYCLE["zones"]):
+            ph=FARM_CYCLE["phases"][zi%len(FARM_CYCLE["phases"])]
+            active=(ph[1]==season)
+            zrect=pygame.Rect(int(zx+zi*zw),zy,int(zw)-6,22)
+            panel(self.screen,zrect.x,zrect.y,zrect.w,zrect.h,alpha=225 if active else 150)
+            pygame.draw.rect(self.screen,C_ACCENT if active else C_PANEL_HI,zrect,1)
+            lbl="Z%d %s %s"%(zi+1,ph[0],ph[1])
+            self.screen.blit(self.fmicro.render(lbl,True,C_ACCENT if active else C_TEXT_DIM),
+                             (zrect.x+8,zrect.y+6))
+        # drop-sequence readout: reel + chutes + magazine, live launch clock
+        dy=zy+26
+        drop_txt=("DROP: %dx%d | %d chutes @%.0f/m | mag %d | +%d AUV"%(
+                      HERDING["reel_drums"],HERDING["lines_per_drum"],
+                      HERDING["drop_chutes"],HERDING["drop_per_min"],
+                      HERDING["magazine_drones"],HERDING["free_auvs"]))
+        self.screen.blit(self.fmicro.render(drop_txt,True,C_CHUTE),(zx,dy))
+        stim_txt=("STIM: %.0f-%.0fHz | %.0fnm | %s | %.1fV/m"%(
+                      HERDING["acoustic_lo_hz"],HERDING["acoustic_hi_hz"],
+                      HERDING["led_nm"],
+                      "bubbles" if HERDING["bubble_curtain"] else "no bub",
+                      HERDING["efield_v_per_m"]))
+        self.screen.blit(self.fmicro.render(stim_txt,True,C_BUBBLE),(zx,dy+13))
+        # goal-doc detail, right column of the readout
+        rel_txt=("REL: PL20 %.1f%% vs juv %.0f%% surv | spring dusk | +%.0ft"%(
+                     RECAPTURE["pl_to_harvest_survival"]*100,
+                     RECAPTURE["juvenile_to_harvest_survival"]*100,
+                     RELEASE["supplier_t_per_trip"]))
+        det_txt=("DETECT: sonar %.0fm | hot %.0f%% | tow -%.0f%% | pur %.0f%%"%(
+                     HERDING["detect_depth_m"],HERDING["hotspot_pred_pct"],
+                     HERDING["trawl_time_cut_pct"],HERD_NET["shrimp_purity_pct"]))
+        rx=rect.x+rect.w-16
+        for i,(txt,col) in enumerate(((rel_txt,C_SHRIMP),(det_txt,C_PING))):
+            img=self.fmicro.render(txt,True,col)
+            self.screen.blit(img,(rx-img.get_width(),dy+i*13))
+        # drop-sequence pipeline: live drone counts per phase (not a timer --
+        # the numbers are read off the animated meshes themselves)
+        buckets=[0]*6
+        for b in self._farm_phase.values(): buckets[b]+=1
+        pipe=[("MAG","carousel armed"),("CHUTE","gravity drop"),("DIVE","to fence depth"),
+              ("FENCE","stimuli on"),("MOUTH","converging"),("RACK","rinse + charge")]
+        pw=(rect.w-64)/6.0; px=rect.x+24; py2=dy+30
+        for i,(nm,sub) in enumerate(pipe):
+            x=int(px+i*pw)
+            panel(self.screen,x,py2,int(pw)-14,30,alpha=185)
+            cnt=buckets[i] if i<len(buckets) else 0
+            col=C_DRONE_HI if cnt>0 else C_TEXT_DIM
+            self.screen.blit(self.fmicro.render("%s %d"%(nm,cnt),True,col),(x+7,py2+4))
+            self.screen.blit(self.fmicro.render(sub,True,C_TEXT_DIM),(x+7,py2+16))
+            if i<5:
+                ax=x+int(pw)-13; ay=py2+15
+                pygame.draw.line(self.screen,C_TEXT_DIM,(ax,ay),(ax+9,ay),1)
+                pygame.draw.polygon(self.screen,C_TEXT_DIM,[(ax+9,ay-3),(ax+9,ay+3),(ax+12,ay)])
+
+    # ---- blueprint overlay (B) + spec-sheet support -------------------------
+    def _bp_overlay(self,rect):
+        """Cached blueprint grid sprite for a rect."""
+        key=(rect.w,rect.h); spr=self._bp_cache.get(key)
+        if spr is None:
+            if len(self._bp_cache)>6: self._bp_cache.clear()
+            spr=pygame.Surface((rect.w,rect.h),pygame.SRCALPHA)
+            for x in range(0,rect.w,44):
+                pygame.draw.line(spr,(110,170,230,18),(x,0),(x,rect.h))
+            for y in range(0,rect.h,44):
+                pygame.draw.line(spr,(110,170,230,18),(0,y),(rect.w,y))
+            for x in range(0,rect.w,220):
+                pygame.draw.line(spr,(110,170,230,40),(x,0),(x,rect.h))
+            for y in range(0,rect.h,220):
+                pygame.draw.line(spr,(110,170,230,40),(0,y),(rect.w,y))
+            pygame.draw.rect(spr,(110,170,230,55),(0,0,rect.w-1,rect.h-1),1)
+            self._bp_cache[key]=spr
+        return spr
+
+    def _draw_blueprint(self,rect):
+        """Blueprint mode (B): engineering grid + datum border + title block
+        over the viewport, dimension callouts on known-OD parts, BOM balloons."""
+        self.screen.blit(self._bp_overlay(rect),rect.topleft)
+        r=self.rend()
+        if self.mode=="engine":
+            dia_lbl={
+                "trans":"OD %.2f m ±2 mm"%DIMS["trans_outer_d_m"],
+                "generator":"OD %.2f m ±2 mm"%DIMS["gen_d_m"],
+                "ring":"OD %.2f m ±3 mm"%DIMS["ring_outer_d_m"],
+                "flywheel":"OD %.2f m ±2 mm"%DIMS["flywheel_d_m"],
+                "shaft":"OD %.0f mm k6"%(DIMS["shaft_d_m"]*1000),
+                "outgear":"OD %.0f mm ±1 mm"%(DIMS["out_gear_d_m"]*1000),
+                "clutch":"OD %.0f mm"%(DIMS["clutch_plate_d_m"]*1000),
+                "boiler":"OD %.2f m"%DIMS["boiler_d_m"],
+                "turbo":"OD %.2f m"%DIMS["turbo_d_m"],
+            }
+            hdim="STACK L %.2f m   RING OD %.2f m"%(
+                DIMS["shaft_len_m"]+DIMS["gen_thick_m"]+DIMS["flywheel_thick_m"]
+                +DIMS["trans_thick_m"]+DIMS["ring_thick_m"],DIMS["ring_outer_d_m"])
+            vdim="OD %.2f"%DIMS["ring_outer_d_m"]; dname="DATUM A"
+        elif self.mode=="hatchery":
+            dia_lbl={
+                "brood_detail":"OD %.0f m TANK"%DIMS["broodstock_tank_d_m"],
+                "larval_detail":"OD %.0f m TANK"%DIMS["larval_tank_d_m"],
+                "nursery_detail":"OD %.0f m POOL"%DIMS["nursery_pool_d_m"],
+                "release_detail":"OD %.1f m CHUTE"%DIMS["release_chute_d_m"],
+                "feed_detail":"OD %.0f m SILO"%DIMS["feed_tank_d_m"],
+                "algae_farm":"OD %.0f m POND"%DIMS["algae_pond_d_m"],
+            }
+            hdim="%.0f BROOD TANKS   %.0f NURSERY POOLS"%(
+                DIMS["broodstock_tanks"],DIMS["nursery_pools"])
+            vdim="%.0f m"%DIMS["nursery_pool_d_m"]; dname="DATUM A"
+        elif self.mode=="farm":
+            dia_lbl={
+                "gantry":"%d-DRUM GANTRY"%HERDING["reel_drums"],
+                "reel":"%d DRUMS x %d"%(HERDING["reel_drums"],HERDING["lines_per_drum"]),
+                "drop":"%d CHUTES @ %.0f/min"%(HERDING["drop_chutes"],HERDING["drop_per_min"]),
+                "drones":"L %.2f m FISH-DOG"%HERDING["drone_len_m"],
+                "net":"MOUTH %.0f x %.0f m"%(HERD_NET["mouth_w_m"],HERD_NET["mouth_h_m"]),
+                "school":"FENCE %.0f m"%HERDING["spread_m"],
+            }
+            hdim="FENCE %.0f m -> MOUTH %.0f m  (%.0f:1)"%(
+                HERDING["spread_m"],HERDING["net_mouth_m"],herd_funnel_ratio())
+            vdim="%.0f m"%HERD_NET["trawl_depth_m"]; dname="SEABED -19 m"
+        else:
+            dia_lbl={
+                "hulls":"L %.0f x B %.0f m"%(SHIP["loa_m"],SHIP["beam_m"]),
+                "solar":"%.0f x %.0f m CANOPY"%(DIMS["solar_roof_len_m"],DIMS["solar_roof_width_m"]),
+                "h2buffer":"OD %.1f m TANK"%DIMS["h2_tank_d_m"],
+                "electro":"OD %.0f m TANK"%DIMS["electro_tank_d_m"],
+                "genset":"OD %.1f m ROTOR"%DIMS["ring_outer_d_m"],
+                "pods":"PROP OD %.1f m"%DIMS["prop_d_m"],
+                "rotors":"OD %.0f m ROTOR"%DIMS["rotor_d_m"],
+                "tunnel":"W %.0f x H %.0f m DUCT"%(DIMS["tunnel_w_m"],DIMS["tunnel_h_m"]),
+                "house":"W %.0f m HOUSE"%DIMS["house_w_m"],
+                "broodstock":"OD %.0f m TANK"%DIMS["broodstock_tank_d_m"],
+                "nursery":"OD %.0f m POOL"%DIMS["nursery_pool_d_m"],
+            }
+            hdim="LOA %.0f m   BEAM %.0f m"%(SHIP["loa_m"],SHIP["beam_m"])
+            vdim="D %.0f m"%LOAD_CONDITIONS["OPERATE"]["draft_m"]; dname="WATERLINE"
+        drawn=set(); anchors=[]
+        for pi,pcx,pcy,rad,depth,tag in getattr(r,"_last_screeninfo",()):
+            if tag=="pending": continue
+            anchors.append((pi,pcx,pcy,rad)); p=r.parts[pi]
+            key=p.key.rstrip("0123456789_")
+            d=dia_lbl.get(p.key) or dia_lbl.get(key)
+            if d is None or key in drawn or rad<26: continue
+            drawn.add(key)
+            pygame.draw.circle(self.screen,C_BP,(int(pcx),int(pcy)),int(rad*0.72),1)
+            ex,ey=pcx+rad*0.55,pcy-rad*0.55
+            pygame.draw.line(self.screen,C_BP,(ex,ey),(ex+26,ey-26),1)
+            self.screen.blit(self.fmicro.render(d,True,C_BP),(ex+30,ey-40))
+        # BOM balloons: item-number circles on both margins
+        left=sorted([a for a in anchors if a[1]<rect.centerx],key=lambda a:a[2])
+        right=sorted([a for a in anchors if a[1]>=rect.centerx],key=lambda a:a[2])
+        for group,bx,sgn in ((left,rect.left+16,-1),(right,rect.right-16,1)):
+            n=max(1,len(group))
+            for i,(pi,pcx,pcy,rad) in enumerate(group):
+                by=rect.top+42+int((i+0.5)*(rect.h-96)/n)
+                pygame.draw.line(self.screen,(110,170,230),(bx+10*sgn*-1,by),(int(pcx),int(pcy)),1)
+                pygame.draw.circle(self.screen,C_BP,(bx,by),9,1)
+                t=self.fmicro.render("%02d"%r.parts[pi].order,True,C_BP)
+                self.screen.blit(t,(bx-t.get_width()//2,by-6))
+        # overall dimension leaders + datum line
+        if anchors:
+            xs=[a[1] for a in anchors]; ys=[a[2] for a in anchors]
+            x0m,x1m=min(xs),max(xs); y1m=max(ys)
+            yl=min(rect.bottom-46,y1m+30)
+            pygame.draw.line(self.screen,C_BP,(x0m,yl),(x1m,yl),1)
+            for xx in (x0m,x1m):
+                pygame.draw.line(self.screen,C_BP,(xx,yl-5),(xx,yl+5),1)
+            himg=self.fmicro.render(hdim,True,C_BP)
+            self.screen.blit(himg,(int((x0m+x1m)/2-himg.get_width()/2),yl-20))
+            ytop=min(ys); xl=max(rect.left+30,x0m-46)
+            pygame.draw.line(self.screen,C_BP,(xl,ytop),(xl,y1m),1)
+            for yy_ in (ytop,y1m):
+                pygame.draw.line(self.screen,C_BP,(xl-5,yy_),(xl+5,yy_),1)
+            vimg=self.fmicro.render(vdim,True,C_BP)
+            vrot=pygame.transform.rotate(vimg,90)
+            self.screen.blit(vrot,(xl-22,int((ytop+y1m)/2-vrot.get_height()/2)))
+            wl=min(rect.bottom-46,y1m+10)
+            for xx in range(int(rect.left+8),int(rect.right-8),14):
+                pygame.draw.line(self.screen,C_BP,(xx,wl),(xx+7,wl),1)
+            self.screen.blit(self.fmicro.render(dname,True,C_BP),(rect.right-92,wl-14))
+        tb=["LEVIATHAN.PY -- TIGER LEVIATHAN DIGITAL TWIN",
+            "DWG %s   SCALE 1:1   UNITS m"%(
+                {"engine":"ENG-001","hatchery":"HAT-001","farm":"FRM-001"}.get(self.mode,"SHP-001")),
+            "SHEET 1 / 1   TOL ±0.05 UNLESS NOTED"]
+        tw=max(self.fmicro.size(t)[0] for t in tb)+16
+        th=len(tb)*14+10
+        tx=int(rect.centerx-tw/2); ty=int(rect.bottom-th-8)
+        pygame.draw.rect(self.screen,(18,24,36),(tx,ty,tw,th))
+        pygame.draw.rect(self.screen,C_BP,(tx,ty,tw,th),1)
+        for i,t in enumerate(tb):
+            self.screen.blit(self.fmicro.render(t,True,C_BP),(tx+8,ty+6+i*14))
+
+    def _draw_solo_badge(self,rect,r):
+        """Corner badge while a part is isolated (S toggles, UP/DOWN steps)."""
+        p=r.parts[r.solo]
+        t1="SOLO  %02d  %s"%(p.order,p.name)
+        t2="S exit   UP/DOWN next part   1 full"
+        w=max(self.fs.size(t1)[0],self.fmicro.size(t2)[0])+24
+        panel(self.screen,rect.right-w-10,rect.y+8,w,40,alpha=235)
+        self.screen.blit(self.fs.render(t1,True,C_ACCENT),(rect.right-w-2,rect.y+14))
+        self.screen.blit(self.fmicro.render(t2,True,C_TEXT_DIM),(rect.right-w-2,rect.y+30))
+
+    def _flat(self):
+        """Flat (mode, index, part) list across all four assemblies -- the rows
+        of the SPEC sheet. Lazy so the renderers build once."""
+        if self._flat_parts is None:
+            fl=[]
+            for mode,rr in (("engine",self.eng_rend),("ship",self.ship_rend),
+                            ("hatchery",self.hatch_rend),("farm",self.farm_rend)):
+                for i,p in enumerate(rr.parts): fl.append((mode,i,p))
+            self._flat_parts=fl
+        return self._flat_parts
+
+    def _part_live(self,part,pk):
+        """Live telemetry rows for a part, read from the running sim."""
+        pt=self.pt; k=part.key
+        if pk=="ring":
+            return ["ring %.0f rpm | %d chambers | block %.0f C"%(
+                        pt.ring_rpm,DIMS["chambers"],pt.block_temp_c),
+                    "genset %s | mode %s"%("ON" if pt.genset_on else "standby",pt.mode)]
+        if pk in("generator","gen"):
+            return ["gen %.0f rpm | bus feed live"%pt.gen_rpm,
+                    "flywheel %.0f rpm buffer"%pt.fly_rpm]
+        if pk=="flywheel":
+            return ["fly %.0f rpm | %.1f kg mass"%(pt.fly_rpm,DIMS["flywheel_mass_kg"])]
+        if pk=="battery":
+            return ["SOC %.0f%% of %.0f MWh"%(pt.soc*100,ELEC["batt_mwh"])]
+        if pk=="h2buffer":
+            return ["H2 %.1f t of %.0f t @ %.0f bar"%(pt.h2_kg/1000.0,
+                        pt.h2_max/1000.0,DIMS["h2_bar"]),
+                    "made %.1f t | used %.1f t"%(pt.h2_made/1000.0,pt.h2_used/1000.0)]
+        if pk=="electro":
+            return ["%d tanks, %d mesh layers | H2 made %.1f t"%(
+                        DIMS["electro_tanks"],DIMS["mesh_layers"],pt.h2_made/1000.0)]
+        if pk=="solar":
+            return ["%.0f m2 deployed | %.0f kWh harvested"%(
+                        DIMS["solar_panel_m2"],pt.solar_kwh)]
+        if pk=="pods":
+            return ["speed %.1f kn | prop %.0f kWh"%(pt.speed_kn,pt.prop_kwh)]
+        if k in("hulls","columns","deck"):
+            return ["mode %s | speed %.1f kn | sea %.0f%%"%(
+                        pt.vessel_mode,pt.speed_kn,self.voyage.sea_state*100),
+                    "storm ballast %.0f%% | trim %+.1f deg"%(
+                        pt.storm_ballast_frac*100,pt.trim_deg)]
+        if k in("broodstock","brood_detail"):
+            return ["%.0f juveniles produced | %d release events"%(
+                        pt.juveniles_produced,pt.release_events)]
+        if k in("nursery","nursery_detail","larval","larval_detail"):
+            return ["%.0f juveniles reared | cycle day %d"%(
+                        pt.juveniles_produced,pt.hatchery_cycle_day)]
+        if k in("release","release_detail","ranch_release"):
+            return ["%.0f juveniles released | %d events"%(
+                        pt.juveniles_released,pt.release_events)]
+        if k in("feed","feed_detail","algae_farm","imta","feed_floor"):
+            return ["algae %.0f kg produced | %.0f kg to shrimp"%(
+                        pt.algae_produced_kg,pt.algae_to_shrimp_kg)]
+        if k=="otec":
+            return ["OTEC %.0f kW baseload | always on"%ENERGY_SUMMARY["otec_kw"]]
+        if k in("drones","scouts"):
+            return ["%d tethered + %d AUV | fence %.0f m"%(
+                        HERDING["tethered_drones"],HERDING["free_auvs"],HERDING["spread_m"]),
+                    "track acc %.0f%% | schools %d"%(
+                        pt.ai_herd_tracking_accuracy,pt.ai_herd_schools_tracked)]
+        if k in("gantry","reel","drop","umbilical"):
+            return ["deploy %.0f min | recover %.0f min"%(
+                        herd_deploy_min(),HERDING["recover_time_min"]),
+                    "trawl %s"%("DEPLOYED" if pt.trawl_deployed else "stowed")]
+        if k in("net","school","bubble","ping"):
+            return ["catch %.0f kg | total %.0f kg"%(pt.catch_kg,pt.catch_total_kg),
+                    "%.0f%% delivery | %.0f t/day"%(
+                        HERDING["herd_eff_pct"],herd_catch_t_per_day())]
+        return ["mode %s | static structure"%pt.vessel_mode]
+
+    def draw_specsheet(self):
+        """MODE_SPEC -- the marine manufacturing specification sheet.
+        Blueprint-grid backdrop; LEFT = grouped parts list (all 4 assemblies),
+        CENTRE = selected part's full spec card + drawing record + live state,
+        RIGHT = stacked master tables. Title block bottom-right."""
+        area=pygame.Rect(0,self.TOP_BAR_H,self.W,
+                         self.H-self.TOP_BAR_H-self.BOTTOM_BAR_H)
+        self.screen.blit(self._bp_overlay(area),area.topleft)
+        groups=(("ENGINE ASSEMBLY","engine",self.eng_rend.parts),
+                ("VESSEL ASSEMBLY","ship",self.ship_rend.parts),
+                ("HATCHERY ASSEMBLY","hatchery",self.hatch_rend.parts),
+                ("FARM / HERDING ASSEMBLY","farm",self.farm_rend.parts))
+        flat=self._flat()
+        self.spec_sel=max(0,min(self.spec_sel,len(flat)-1))
+        # stale row hitboxes from a previous page can't fire
+        self._spec_hitboxes={k:v for k,v in self._spec_hitboxes.items()
+                             if not isinstance(k,int)}
+        if not self.spec_page:
+            self.screen.blit(self.fb.render(
+                "MANUFACTURING SPECIFICATION SHEET",True,C_BP),(18,area.y+12))
+            self.screen.blit(self.fs.render(
+                "Tiger Leviathan -- per-part drawings, process, tolerance, "
+                "service data   (I = full info, wheel scrolls, "
+                "ENTER/D = part page)",True,C_TEXT_DIM),(18,area.y+36))
+        # page tabs (clickable, or ENTER/D cycles)
+        ptab_x=area.right-300
+        for pg,lbl in ((0,"1 SHEET"),(1,"2 ITEM")):
+            tw2=self.fs.size(lbl)[0]+16
+            prect=pygame.Rect(ptab_x,area.y+10,tw2,22)
+            panel(self.screen,prect.x,prect.y,prect.w,prect.h,
+                  alpha=235 if self.spec_page==pg else 175)
+            self.screen.blit(self.fs.render(lbl,True,
+                C_BP if self.spec_page==pg else C_TEXT_DIM),(prect.x+8,prect.y+5))
+            self._spec_hitboxes["page%d"%pg]=prect; ptab_x+=tw2+8
+        if self.spec_page:
+            self._draw_spec_page(area,flat); return
+
+        # ---- LEFT: grouped parts list (scrollable, clickable) --------------
+        lx,lw=12,300; ly0,ly1=area.y+58,area.bottom-14
+        panel(self.screen,lx,ly0,lw,ly1-ly0)
+        row_h=17
+        total=sum(1+len(plist) for _,_,plist in groups)
+        maxscroll=max(0,total*row_h-(ly1-ly0-40))
+        self.spec_scroll=max(0,min(self.spec_scroll,maxscroll))
+        # rows before the selected one (incl. group headers) -> scroll target
+        bounds=[0,len(self.eng_rend.parts),
+                len(self.eng_rend.parts)+len(self.ship_rend.parts),
+                len(self.eng_rend.parts)+len(self.ship_rend.parts)+len(self.hatch_rend.parts)]
+        headers=sum(1 for b in bounds if self.spec_sel>=b)
+        ry_sel=(self.spec_sel+headers)*row_h; vis=ly1-ly0-44-row_h
+        if ry_sel-self.spec_scroll<0: self.spec_scroll=ry_sel
+        elif ry_sel-self.spec_scroll>vis: self.spec_scroll=ry_sel-vis
+        self._spec_rows=[]
+        clip=self.screen.get_clip()
+        self.screen.set_clip(pygame.Rect(lx,ly0+24,lw,ly1-ly0-30))
+        ry=ly0+28-self.spec_scroll; gi=0; mouse=pygame.mouse.get_pos()
+        for gname,gmode,plist in groups:
+            if ly0+24<=ry<ly1:
+                self.screen.blit(self.fs.render(gname,True,C_WARN),(lx+10,ry))
+            ry+=row_h
+            for p in plist:
+                rr=pygame.Rect(lx+6,ry,lw-12,row_h-1)
+                sel=(gi==self.spec_sel)
+                if sel: pygame.draw.rect(self.screen,(50,74,104),rr)
+                elif rr.collidepoint(mouse): pygame.draw.rect(self.screen,(34,46,62),rr)
+                col=C_ACCENT if sel else C_TEXT
+                self.screen.blit(self.fs.render("%02d %s"%(p.order,p.name[:35]),True,col),
+                                 (lx+12,ry+2))
+                self._spec_hitboxes[gi]=rr; ry+=row_h; gi+=1
+        self.screen.set_clip(clip)
+        self.screen.blit(self.fs.render(
+            "%d parts -- wheel scrolls"%len(flat),True,C_TEXT_DIM),(lx+10,ly1-20))
+        if maxscroll>0:
+            frac=self.spec_scroll/maxscroll; track=ly1-ly0-60
+            sy=ly0+30+int(frac*track*0.8)
+            pygame.draw.rect(self.screen,C_PANEL_HI,
+                             (lx+lw-6,sy,3,max(18,int(track*0.2))))
+
+        # ---- CENTRE: selected part's full spec card ------------------------
+        cx,cw=lx+lw+12,560
+        mode,pi,part=flat[self.spec_sel]
+        pk=part.key.rstrip("0123456789_")
+        live=self._part_live(part,pk)
+        ch=min(ly1-ly0,56+len(part.specs)*16+74+75+18+len(live)*15+80)
+        panel(self.screen,cx,ly0,cw,ch)
+        self.screen.blit(self.font.render(part.name,True,C_ACCENT),(cx+12,ly0+8))
+        self.screen.blit(self.fs.render(
+            "key %s   meshes %d   order #%d   asm %s"%(
+                part.key,len(part.meshes),part.order,mode.upper()),
+            True,C_TEXT_DIM),(cx+12,ly0+28))
+        yy=ly0+50
+        for s in part.specs:
+            col=(C_GOOD if s.startswith("--- MANUFACTURING")
+                 else (C_GOOD if s.lstrip().startswith("MFG") else C_TEXT))
+            self.screen.blit(self.fs.render(s,True,col),(cx+12,yy)); yy+=16
+        yy+=8
+        lo=np.array([1e9]*3); hi=np.array([-1e9]*3)
+        for m in part.meshes:
+            lo=np.minimum(lo,m.verts.min(axis=0)); hi=np.maximum(hi,m.verts.max(axis=0))
+        disp_scale={"engine":ENG_DISP,"ship":SHIP_DISP,
+                    "hatchery":HATCH_DISP,"farm":FARM_DISP}[mode]
+        env=(hi-lo)/disp_scale*1000.0   # mm
+        envtxt=("%.0f x %.0f x %.0f mm"%tuple(env)) if mode=="engine" \
+               else ("%.1f x %.1f x %.1f m"%tuple(env/1000.0))
+        FASTENER={
+            "ring":"studs M30 x10 @ 550 N.m","shaft":"press + spline",
+            "generator":"rotor M10 Ti x12 @ 38 N.m","outgear":"M48x2 LH @ 480",
+            "flywheel":"ring M16 x8 @ 160 N.m","clutch":"carrier M12 x12 @ 95",
+            "h2buffer":"saddle M24 x16","electro":"lid bolts M16 x20",
+            "solar":"rail clamps M10","pods":"flange M24 x20 @ 260",
+            "rotors":"hub bolts M18 x10","reel":"drum flange M20 x12",
+            "drop":"PTFE liner clips","net":"headrope shackles x8",
+            "gantry":"leg bolts M30 x16","hulls":"butt weld + bracket",
+            "house":"weld perimeter","broodstock":"flange M16 x12",
+            "nursery":"rim bolts M12 x20",
+        }
+        fast=FASTENER.get(part.key) or FASTENER.get(pk) or "per torque index"
+        for k2,v2 in (("ASSEMBLY ORDER","#%d of %d"%(part.order,len(flat))),
+                      ("DRAWING NO","DWG-%s-%03d REV C"%(mode.upper()[:3],part.order)),
+                      ("ENVELOPE",envtxt),
+                      ("DATUM REFS","A deck CL | B keel | C FP"),
+                      ("FASTENERS",fast),
+                      ("QC CLASS","SPC-100%% | CMM first-article"),
+                      ("EXPLODE VECTOR","(%.2f, %.2f, %.2f) m"%tuple(part.explode)),
+                      ("POP DIRECTION","(%.2f, %.2f, %.2f)"%tuple(part.popdir)),
+                      ("MESH FACES","%d polys"%sum(len(m.faces) for m in part.meshes)),
+                      ("PAINT / COLOUR","%s"%(part.color,))):
+            self.screen.blit(self.fs.render(k2,True,C_TEXT_DIM),(cx+12,yy))
+            self.screen.blit(self.fs.render(v2,True,C_TEXT),(cx+170,yy)); yy+=15
+        self.screen.blit(self.fs.render("LIVE STATE",True,C_WARN),(cx+12,yy+2))
+        for i,s in enumerate(live):
+            self.screen.blit(self.fs.render(s,True,C_GOOD),(cx+12,yy+18+i*15))
+        # process route strip: OP-numbered boxes parsed from the MFG text
+        ry2=yy+18+len(live)*15+8
+        if ry2+34<ly0+ch:
+            self.screen.blit(self.fs.render("PROCESS ROUTE",True,C_WARN),(cx+12,ry2))
+            bx=cx+12
+            for i,op in enumerate(_proc_route(part)):
+                lbl="OP%d %s"%((i+1)*10,op); bw=self.fs.size(lbl)[0]+14
+                if bx+bw>cx+cw-10: break
+                by=ry2+15
+                pygame.draw.rect(self.screen,(30,44,62),(bx,by,bw,16))
+                pygame.draw.rect(self.screen,C_BP,(bx,by,bw,16),1)
+                self.screen.blit(self.fs.render(lbl,True,C_BP),(bx+7,by+3))
+                ax=bx+bw+2
+                pygame.draw.line(self.screen,C_BP,(ax,by+8),(ax+8,by+8),1)
+                pygame.draw.line(self.screen,C_BP,(ax+8,by+8),(ax+4,by+5),1)
+                pygame.draw.line(self.screen,C_BP,(ax+8,by+8),(ax+4,by+11),1)
+                bx+=bw+11
+        # remaining centre space: notes + live 3D thumbnail
+        ny=ly0+ch+8
+        if ny+120<ly1:
+            panel(self.screen,cx,ny,cw,ly1-ny)
+            self.screen.blit(self.fs.render("SHEET NOTES",True,C_WARN),(cx+12,ny+8))
+            for i,s in enumerate([
+                    "Dimensions in m (vessel/farm) / mm (engine). Tolerances",
+                    "per the GD&T plan. Rotating hardware balanced G1.0;",
+                    "HV per IEC 60092-503; every spec line above comes",
+                    "from the part's drawing record in MFG_SPEC.",
+                    "Hover the same part in SHIP/ENGINE/FARM to see 3D."]):
+                self.screen.blit(self.fs.render(s,True,C_TEXT_DIM),(cx+12,ny+30+i*15))
+            tw=int(cw*0.46)
+            trect=pygame.Rect(cx+cw-tw-10,ny+8,tw,ly1-ny-16)
+            if trect.w>60 and trect.h>60:
+                if self._thumb_sel!=self.spec_sel or self._thumb is None:
+                    span=0.2
+                    for m in part.meshes:
+                        span=max(span,float(np.linalg.norm(
+                            m.verts.max(axis=0)-m.verts.min(axis=0))))
+                    self._thumb=ShipRenderer(
+                        parts_builder=(lambda pp=part: [pp]),
+                        is_engine=False,home_az=0.6,home_el=0.45,
+                        home_dist=max(0.35,span*1.45))
+                    self._thumb_sel=self.spec_sel
+                self._thumb.az=pygame.time.get_ticks()*0.00035
+                self._thumb.render(self.screen,trect,self.ang,self.firing_glow,
+                                   view_override="full",interactive=False,
+                                   fog_col=(20,24,34))
+                pygame.draw.rect(self.screen,C_BP,trect,1)
+                self._spec_hitboxes["thumb"]=trect
+                lbl=self.fs.render("ITEM %02d 3D"%part.order,True,C_BP)
+                self.screen.blit(lbl,(trect.x+4,trect.bottom-14))
+
+        # ---- RIGHT: stacked master tables ----------------------------------
+        rx=cx+cw+12; rw=self.W-rx-12
+        tables=[
+            ("MASTER DIMENSIONS",[
+                ("Vessel L/B/depth","%.0f / %.0f / %.0f m"%(
+                    SHIP["loa_m"],SHIP["beam_m"],SHIP["depth_m"])),
+                ("Displacement","%.0f t semi-sub"%SHIP["displacement_t"]),
+                ("Pontoons x columns","%d x %d, 11 m dia"%(
+                    HULL_FORM["pontoons"],HULL_FORM["columns_per_pontoon"])),
+                ("Solar canopy","%.0f m2 | %.0f MW pk"%(
+                    DIMS["solar_panel_m2"],ENERGY_SUMMARY["solar_peak_kw"]/1000.0)),
+                ("Rotary ring","OD %.2f x %.2f m, %d ch"%(
+                    DIMS["ring_outer_d_m"],DIMS["ring_thick_m"],DIMS["chambers"])),
+                ("Generator","OD %.2f x %.2f m axial"%(DIMS["gen_d_m"],DIMS["gen_thick_m"])),
+                ("Pod prop","OD %.1f m, %d blades"%(DIMS["prop_d_m"],DIMS["prop_blades"])),
+                ("H2 bank","%.0f t @ %.0f bar"%(DIMS["h2_capacity_kg"]/1000.0,DIMS["h2_bar"])),
+                ("Battery","%.0f MWh LFP"%ELEC["batt_mwh"]),
+                ("Drone fence","%.0f m -> %.0f m net"%(HERDING["spread_m"],HERDING["net_mouth_m"])),
+            ]),
+            ("HERDING / DROP PLANT",[
+                ("Reel drums","%d x %d lines"%(HERDING["reel_drums"],HERDING["lines_per_drum"])),
+                ("Drop chutes","%d PTFE @ %.0f/min"%(HERDING["drop_chutes"],HERDING["drop_per_min"])),
+                ("Tethered / free","%d / %d"%(HERDING["tethered_drones"],HERDING["free_auvs"])),
+                ("Magazine","%d charged spares"%HERDING["magazine_drones"]),
+                ("Deploy / recover","%.0f / %.0f min"%(herd_deploy_min(),HERDING["recover_time_min"])),
+                ("Catch","%.0f t/set, %d sets/day"%(HERDING["catch_t_per_set"],HERDING["sets_per_day"])),
+                ("Sweep","%.0f ha/h @ %.1f kn"%(herd_sweep_area_ha_per_h(),HERDING["sweep_speed_kn"])),
+            ]),
+            ("FLUIDS & SERVICE",[
+                ("Seawater electrolyte","cont. / RO polish"),
+                ("RAS water loop","biofloc, 24/7"),
+                ("Coolant PG40","800 L / 5 yr"),
+                ("Pod lube PAO","life sealed"),
+                ("Reel hydraulic VG46","60 L / 4 yr"),
+                ("C-SiC apex seals","18k h inspect"),
+                ("PTFE chute liner","2 yr swap"),
+            ]),
+            ("MASS BOM (t)",[
+                ("Hull steel EH36","35,000"),
+                ("Hatchery+tanks","57,000"),
+                ("Deck plant+canopy","38,000"),
+                ("H2 tanks+gas","9,600"),
+                ("Rotary genset","118"),
+                ("Battery LFP","1,150"),
+                ("Farm gear+reel","420"),
+            ]),
+            ("QC & VALIDATION",[
+                ("Chamber volume","±0.5%%  cc-class"),
+                ("Chute bore","±0.5 mm PTFE"),
+                ("Hull UT","100%% scan"),
+                ("Prop runout","5 mm TIR"),
+                ("HV hipot","10 kV / 60 s"),
+                ("Balance grade","G1.0"),
+                ("eDNA recapture","65%% verified"),
+            ]),
+            ("CONNECTORS & HARNESSES",[
+                ("HV bus main","6.6 kV DC"),
+                ("Pod feeders x%d"%DIMS["pods"],"3ph potted"),
+                ("H2 manifold","%.0f bar PRD"%DIMS["h2_bar"]),
+                ("Drone umbilical","fibre + 48 V x48"),
+                ("LV backbone","24 V Deutsch DT"),
+                ("Can bus","CAN-FD 5 Mbps"),
+            ]),
+        ]
+        half=(len(tables)+1)//2; tw2=(rw-8)//2
+        for col_i,tt in enumerate((tables[:half],tables[half:])):
+            tx0=rx+col_i*(tw2+8); ty=ly0
+            for tname,trows in tt:
+                th=30+len(trows)*15
+                if ty+th>ly1: break
+                panel(self.screen,tx0,ty,tw2,th)
+                self.screen.blit(self.fs.render(tname,True,C_WARN),(tx0+10,ty+7))
+                for i,(a,b) in enumerate(trows):
+                    self.screen.blit(self.fs.render(a,True,C_TEXT_DIM),(tx0+10,ty+26+i*15))
+                    self.screen.blit(self.fs.render(b,True,C_TEXT),
+                                     (tx0+tw2-self.fs.size(b)[0]-10,ty+26+i*15))
+                ty+=th+8
+        # ---- title block ----------------------------------------------------
+        tb=["LEVIATHAN.PY -- TIGER LEVIATHAN-CLASS",
+            "DWG MFG-001   SCALE NTS   UNITS m",
+            "SHEET 1 / 1   TOL ±0.05 UNLESS NOTED"]
+        tw=max(self.fmicro.size(t)[0] for t in tb)+16
+        th=len(tb)*14+10
+        tx,ty2=area.right-tw-8,area.bottom-th-8
+        pygame.draw.rect(self.screen,(18,24,36),(tx,ty2,tw,th))
+        pygame.draw.rect(self.screen,C_BP,(tx,ty2,tw,th),1)
+        for i,t in enumerate(tb):
+            self.screen.blit(self.fmicro.render(t,True,C_BP),(tx+8,ty2+6+i*14))
+
+    def _draw_spec_page(self,area,flat):
+        """Full detail page for ONE part (ENTER/D on the spec sheet): the
+        complete drawing record -- big 3D, full spec text, every record field,
+        vertical process route, mass estimate, live telemetry."""
+        mode,pi,part=flat[self.spec_sel]
+        pk=part.key.rstrip("0123456789_")
+        dwg="DWG-%s-%03d"%(mode.upper()[:3],part.order)
+        lo=np.array([1e9]*3); hi=np.array([-1e9]*3)
+        for m in part.meshes:
+            lo=np.minimum(lo,m.verts.min(axis=0)); hi=np.maximum(hi,m.verts.max(axis=0))
+        disp_scale={"engine":ENG_DISP,"ship":SHIP_DISP,
+                    "hatchery":HATCH_DISP,"farm":FARM_DISP}[mode]
+        env_m=(hi-lo)/disp_scale; env_mm=env_m*1000.0
+        txt=" ".join(part.specs).lower()
+        dens=next((d for kw,d in (
+            ("tungsten",17.0),("inconel",8.19),("eh36",7.85),("steel",7.85),
+            ("ti-6al",4.43),("titanium",4.43),("7075",2.81),("6061",2.70),
+            ("aluminum",2.70),("aluminium",2.70),("copper",8.96),("cu-",8.96),
+            ("bronze",8.80),("carbon",1.60),("ptfe",2.20),("pmma",1.18),
+            ("fibreglass",1.90),("glass",2.50),("polymer",1.20),
+            ("rubber",1.15),("concrete",2.40),("ceramic",3.90),("abs",1.05))
+            if kw in txt),4.0)
+        fill=0.38 if mode=="engine" else 0.02
+        mass_kg=env_m[0]*env_m[1]*env_m[2]*dens*1000.0*fill
+        ra=re.search(r"ra\s*([0-9.]+)",txt)
+        finish=("Ra %s per drawing"%ra.group(1)) if ra else "Ra 1.6 std"
+        envtxt=("%.0f x %.0f x %.0f mm"%tuple(env_mm)) if mode=="engine" \
+               else ("%.1f x %.1f x %.1f m"%tuple(env_m))
+        masstxt="~%.1f kg"%mass_kg if mass_kg<1000 else "~%.1f t"%(mass_kg/1000.0)
+        # header
+        self.screen.blit(self.fb.render(
+            "ITEM %02d -- %s"%(part.order,part.name),True,C_BP),(18,area.y+8))
+        self.screen.blit(self.fs.render(
+            "%s REV C   SHEET 1/1   (ENTER/D = back to sheet)"%dwg,
+            True,C_TEXT_DIM),(18,area.y+34))
+        # LEFT: big 3D view + size block
+        pw=int(area.w*0.40)
+        panel(self.screen,12,area.y+54,pw,area.h-70)
+        if self._thumb_sel!=self.spec_sel or self._thumb is None:
+            span=max(0.2,float(np.linalg.norm(hi-lo)))
+            self._thumb=ShipRenderer(
+                parts_builder=(lambda pp=part:[pp]),is_engine=False,
+                home_az=0.6,home_el=0.45,home_dist=max(0.35,span*1.45))
+            self._thumb_sel=self.spec_sel
+        self._thumb.az=pygame.time.get_ticks()*0.00035
+        self._thumb.render(self.screen,pygame.Rect(
+            24,area.y+66,pw-24,area.h-250),
+            self.ang,self.firing_glow,
+            view_override="full",interactive=False,fog_col=(20,24,34))
+        dy=area.bottom-170
+        for a,b in (("ENVELOPE",envtxt),
+                    ("MASS (est)","%s  (%.2f g/cc, fill %.2f)"%(masstxt,dens,fill)),
+                    ("FINISH",finish),
+                    ("ASSEMBLY","#%d of %d | explode (%.2f,%.2f,%.2f) m"
+                     %(part.order,len(flat),*part.explode)),
+                    ("GEOMETRY","%d meshes / %d polys / %d verts"
+                     %(len(part.meshes),sum(len(m.faces) for m in part.meshes),
+                       sum(len(m.verts) for m in part.meshes)))):
+            self.screen.blit(self.fs.render(a,True,C_TEXT_DIM),(24,dy))
+            self.screen.blit(self.fs.render(b,True,C_TEXT),(160,dy)); dy+=17
+        # MIDDLE: the full spec text, nothing trimmed
+        mx=16+pw; mw=int(area.w*0.335)
+        panel(self.screen,mx,area.y+54,mw,area.h-70)
+        self.screen.blit(self.fs.render(
+            "PART SPECIFICATION (verbatim)",True,C_WARN),(mx+10,area.y+62))
+        yy=area.y+84
+        for s in part.specs:
+            col=(C_GOOD if s.startswith("--- MANUFACTURING")
+                 or s.lstrip().startswith("MFG") else C_TEXT)
+            self.screen.blit(self.fs.render(s,True,col),(mx+10,yy)); yy+=16
+            if yy>area.bottom-24:
+                self.screen.blit(self.fs.render("...",True,C_TEXT_DIM),(mx+10,yy)); break
+        # RIGHT: complete drawing record + route + live
+        rx=mx+mw+8; rw=area.right-rx-12
+        rec=[
+            ("DRAWING RECORD",[
+                ("Drawing no",dwg),("Revision","C (released)"),
+                ("Units / scale","%s / NTS"%("mm" if mode=="engine" else "m")),
+                ("Tolerance","±0.05 gen; per GD&T plan"),
+                ("Datums","A deck CL | B keel | C FP"),
+                ("Envelope",envtxt),
+                ("Mass","%s est"%masstxt),
+                ("Finish",finish),
+                ("Fasteners","per torque index"),
+                ("QC","SPC-100%% | CMM first-article"),
+                ("Mat cert","ABS/EN10204 3.1"),
+                ("Status","production intent"),
+            ]),
+            ("PROCESS ROUTE",[("OP%02d"%((i+1)*10),op)
+                              for i,op in enumerate(_proc_route(part))]),
+            ("LIVE STATE",[("%d"%(i+1),s)
+                           for i,s in enumerate(self._part_live(part,pk))]),
+            ("REVISION HISTORY",[
+                ("REV A","initial release"),
+                ("REV B","drop reel + smart trawl"),
+                ("REV C","current -- verified"),
+            ]),
+        ]
+        ty=area.y+54
+        for tname,trows in rec:
+            th=30+len(trows)*15
+            if ty+th>area.bottom-14: break
+            panel(self.screen,rx,ty,rw,th)
+            self.screen.blit(self.fs.render(tname,True,C_WARN),(rx+10,ty+7))
+            for i,(a,b) in enumerate(trows):
+                self.screen.blit(self.fs.render(a,True,C_TEXT_DIM),(rx+10,ty+26+i*15))
+                vx=rx+(36 if tname=="LIVE STATE" else 108)
+                self.screen.blit(self.fs.render(b,True,C_TEXT),(vx,ty+26+i*15))
+            ty+=th+8
+
+    def _vignette(self,rect):
+        """Cached soft corner-darkening sprite (Radiant.py vignette)."""
+        key=(rect.w,rect.h); spr=self._vignette_cache.get(key)
+        if spr is None:
+            if len(self._vignette_cache)>4: self._vignette_cache.clear()
+            spr=pygame.Surface((rect.w,rect.h),pygame.SRCALPHA)
+            for i in range(16):
+                # concentric translucent edge darkening, cheapest possible
+                frac=i/16.0
+                a=int(4+30*frac*frac)
+                pygame.draw.rect(spr,(6,10,18,a),
+                    (int(rect.w*frac*0.5),int(rect.h*frac*0.5),
+                     int(rect.w*(1.0-frac)),int(rect.h*(1.0-frac))),1)
+            self._vignette_cache[key]=spr
+        return spr
+
     def draw_preview(self):
         r=self.rend(); rect=self.view_rect(); self._preview_hitboxes={}
         mp=pygame.mouse.get_pos()
         interactive=rect.collidepoint(mp) and not self._over_panel(mp)
         heat=clamp((self.pt.block_temp_c-THERM["ambient_c"])/110.0) if self.mode=="engine" else 0.0
-        r.render(self.screen,rect,self.ang,
-            firing_glow=self.firing_glow if self.mode=="engine" else None,
-            mouse_pos=mp,show_labels=self.show_labels,label_font=self.fs,
-            interactive=interactive,
-            injection=self.injection if self.mode=="engine" else None,heat=heat)
+        # dynamic resolution (SSF.py): under 26 fps the model renders at 2/3
+        # scale and is smoothed up -- interaction coords are remapped to match.
+        # Under lowq it also re-renders only every second frame (the previous
+        # frame is blitted) -- unless a mouse button is held, so dragging
+        # still updates the camera every frame.
+        if self._lowq and not self.blueprint and r.solo is None:
+            self._lowq_phase=(getattr(self,"_lowq_phase",0)+1)&1
+            if any(pygame.mouse.get_pressed()): self._lowq_phase=0
+            if (self._lowq_phase or getattr(self,"_model_surf",None) is None or
+                    self._model_surf.get_size()!=(rect.w,rect.h)):
+                w2,h2=max(2,int(rect.w*0.66)),max(2,int(rect.h*0.66))
+                sub=pygame.Surface((w2,h2)); sub.fill(BG_MODEL_BOT)
+                mp2=((mp[0]-rect.x)*w2/max(1,rect.w),
+                     (mp[1]-rect.y)*h2/max(1,rect.h))
+                r.render(sub,pygame.Rect(0,0,w2,h2),self.ang,
+                    firing_glow=self.firing_glow if self.mode=="engine" else None,
+                    mouse_pos=mp2,show_labels=self.show_labels,label_font=self.fs,
+                    interactive=interactive,
+                    injection=self.injection if self.mode=="engine" else None,
+                    heat=heat,fog_col=BG_MODEL_BOT)
+                if (getattr(self,"_model_surf",None) is None or
+                        self._model_surf.get_size()!=(rect.w,rect.h)):
+                    self._model_surf=pygame.Surface((rect.w,rect.h))
+                self._model_surf.blit(
+                    pygame.transform.smoothscale(sub,(rect.w,rect.h)),(0,0))
+            self.screen.blit(self._model_surf,rect.topleft)
+        else:
+            r.render(self.screen,rect,self.ang,
+                firing_glow=self.firing_glow if self.mode=="engine" else None,
+                mouse_pos=mp,show_labels=self.show_labels,label_font=self.fs,
+                interactive=interactive,
+                injection=self.injection if self.mode=="engine" else None,
+                heat=heat,fog_col=BG_MODEL_BOT)
+        self.screen.blit(self._vignette(rect),rect.topleft)
+        if self.blueprint: self._draw_blueprint(rect)
         if self.mode=="hatchery":
             self._draw_hatchery_overlay(rect)
+        elif self.mode=="farm":
+            self._draw_farm_overlay(rect)
+        elif self.mode=="engine":
+            self._draw_engine_overlay(rect)
         self.draw_view_tabs(); self.draw_part_list(); self.draw_scale_bar(rect)
         self.draw_spec_card()
+        if r.solo is not None: self._draw_solo_badge(rect,r)
         if self.mode=="ship": self.draw_ship_legend()
         elif self.mode=="engine": self.draw_engine_stats()
         elif self.mode=="hatchery": self.draw_hatchery_stats()
+        elif self.mode=="farm": self.draw_farm_stats()
         self.draw_preview_footer()
 
     def draw_view_tabs(self):
@@ -7373,17 +11023,37 @@ class App:
         line2="L labels   R reset   E explode   X section   [ ] build   A all   C clear"
         self.screen.blit(self.fs.render(line1,True,C_TEXT),(x+12,y+10))
         self.screen.blit(self.fs.render(line2,True,C_TEXT_DIM),(x+12,y+30))
-        line3="V checklist   I full info   H help   , / . time-warp (cruise)"
+        line3="V checklist  I info  H help  ,/. warp  B bp  K rot  P pause  S solo"
         self.screen.blit(self.fs.render(line3,True,C_TEXT_DIM),(x+12,y+50))
         labels_txt="LABELS ON" if self.show_labels else "LABELS OFF"
-        reset_txt="RESET VIEW"; section_txt="CUT ON" if r.section else "CUT OFF"
-        rx=x+w-240; chips=[]
-        for text,key,active in ((labels_txt,"labels",self.show_labels),(section_txt,"section",r.section),(reset_txt,"reset",False)):
+        reset_txt="RESET"; section_txt="CUT ON" if r.section else "CUT OFF"
+        bp_txt="BP ON" if self.blueprint else "BP OFF"
+        rot_txt="ROT ON" if r.auto_rotate else "ROT OFF"
+        pause_txt="PAUSED" if self.paused else "RUNNING"
+        rx=x+w-460; chips=[]
+        for text,key,active in ((labels_txt,"labels",self.show_labels),(section_txt,"section",r.section),
+                                (bp_txt,"blueprint",self.blueprint),(rot_txt,"rotate",r.auto_rotate),
+                                (pause_txt,"pause",self.paused),(reset_txt,"reset",False)):
             tw=self.fs.size(text)[0]+16; rect=pygame.Rect(rx,y+18,tw,24)
             panel(self.screen,rect.x,rect.y,rect.w,rect.h,alpha=235 if active else 180)
-            self.screen.blit(self.fs.render(text,True,C_ACCENT if active else C_TEXT),(rect.x+8,rect.y+6))
-            chips.append((key,rect)); rx+=tw+8
+            self.screen.blit(self.fs.render(text,True,(C_BP if key=="blueprint" and active else
+                              (C_WARN if key=="pause" and active else
+                               (C_ACCENT if active else C_TEXT)))),(rect.x+8,rect.y+6))
+            chips.append((key,rect)); rx+=tw+6
         for key,rect in chips: self._preview_hitboxes[key]=rect
+        # status chips row (Submarine.py bottom chrome): live vessel telemetry
+        pt=self.pt
+        svals=[("MODE",pt.mode,C_ACCENT),
+               ("SOC","%.0f%%"%(pt.soc*100),C_GOOD if pt.soc>0.35 else C_WARN),
+               ("H2","%.0f kg"%pt.h2_kg,C_H2),
+               ("FARM","%.0f kW"%pt.flow.get("farm",0.0),C_DRONE_HI),
+               ("FPS","%.0f"%self.fps,C_TEXT_DIM)]
+        sx=x+w-460; sy=y+48
+        for lab,val,col in svals:
+            text="%s %s"%(lab,val); tw=self.fmicro.size(text)[0]+12
+            panel(self.screen,sx,sy,tw,16,alpha=190)
+            self.screen.blit(self.fmicro.render(text,True,col),(sx+6,sy+3))
+            sx+=tw+5
 
     def draw_spec_card(self):
         r=self.rend(); part=r.active_part()
@@ -7487,12 +11157,27 @@ class App:
         panel(self.screen,x,y,w,h)
         self.screen.blit(self.fb.render("ROTARY H2 ENGINE",True,C_CHAMBER_FIRE),(x+12,y+8))
         pt=self.pt
+        ph=self._phys or {}
         rows=[("State","FIRING" if pt.genset_on else "idle"),
             ("Ring speed","%.0f rpm"%pt.ring_rpm),("Generator","%.0f rpm"%pt.gen_rpm),
             ("Flywheel","%.0f rpm"%pt.fly_rpm),("Block temp","%.0f C"%pt.block_temp_c),
+            ("Boiler / PCM","%.0f C / %.0f C"%(pt.boiler_c,pt.pcm_c)),
+            ("Status",ph.get("status","--")),
+            ("Charge","%.0f kPa  x%.2f"%(ph.get("pressure_kpa",0.0),
+                                        ph.get("pressure_ratio",1.0))),
+            ("H2 fuel flow","%.2f g/s (AFR %.0f)"%(ph.get("fuel_g_s",0.0),
+                                                   ph.get("afr",0.0))),
+            ("Shaft / Gen","%.0f / %.0f kW"%(ph.get("shaft_kw",0.0),
+                                             ph.get("gen_kw",0.0))),
+            ("ORC recovery","%.0f kW  %s (%.0f%%)"%(ph.get("orc_kw",0.0),pt.fluid,
+                                                   ph.get("recovery_eff",0.0)*100)),
+            ("TEG film","%.0f kW"%pt.flow.get("teg",0.0)),
+            ("Clutch","%.0f Nm / %.0f bar"%(ph.get("main_torque_nm",0.0),
+                                            ph.get("hyd_bar",0.0))),
+            ("Slip heat","%.0f kW"%ph.get("slip_heat_kw",0.0)),
+            ("Supercap","%.1f / %.1f MWh"%(pt.cap_kwh/1000.0,pt.cap_max/1000.0)),
             ("Rated output","%.1f MW electrical"%(GENSET_RATED_KW/1000)),
             ("Fuel","HYDROGEN (blue flame)"),("Chambers","%d, direct-injected"%DIMS["chambers"]),
-            ("Steam recovery","%.0f%% of waste heat"%(STEAM_RECOVER_FRAC*100)),
             ("Output type","ELECTRICITY ONLY")]
         yy=y+42
         for lab,val in rows:
@@ -7626,6 +11311,122 @@ class App:
                  "Eggs" in lab or "Nauplii" in lab or "PL20" in lab else C_TEXT))))))
             self.screen.blit(self.fs.render(val,True,col),(x+150,yy)); yy+=19
 
+    def draw_farm_stats(self):
+        w,x=self.RIGHT_PANEL_W-16,self.W-self.RIGHT_PANEL_W+8
+        y=self.TOP_BAR_H+4; h=self.H-self.TOP_BAR_H-self.BOTTOM_BAR_H-12
+        panel(self.screen,x,y,w,h)
+        self.screen.blit(self.fb.render("DRONE SHRIMP HERDING",True,C_DRONE_HI),(x+12,y+8))
+        pt=self.pt
+        rows=[("THE DROP DESIGN",""),
+            ("Reel","%d drums x %d lines"%(HERDING["reel_drums"],HERDING["lines_per_drum"])),
+            ("Tethered lines","%d umbilicals"%HERDING["tethered_drones"]),
+            ("Drop chutes","%d PTFE gravity"%HERDING["drop_chutes"]),
+            ("Chute angle","%.0f deg, %.1f s drop"%(HERDING["chute_angle_deg"],HERDING["chute_drop_s"])),
+            ("Splash","flared cone + air-bleed, <0.3 m"),
+            ("Magazine","%d drones, AI-indexed"%HERDING["magazine_drones"]),
+            ("Drop rate","%.0f/min -> %d in %.0f min"%(HERDING["drop_per_min"],HERDING["tethered_drones"],herd_deploy_min())),
+            ("Recovery","%.0f/min cradle"%HERDING["recover_per_min"]),
+            ("Recharge","%.0f min inductive"%HERDING["charge_min"]),
+            ("Rinse","freshwater desal, kills biofilm"),
+            ("Dead drone","winch-in on umbilical"),("",""),
+            ("THE FISH DOG",""),
+            ("Hull","%.2f m torpedo, %.0f kg"%(HERDING["drone_len_m"],HERDING["drone_mass_kg"])),
+            ("Speed / depth","%.0f kn / %.0f m"%(HERDING["drone_speed_kn"],HERDING["drone_depth_m"])),
+            ("Edge AI","22 TOPS, RL herd policy"),
+            ("Thrusters","%d ducted, %.2f m"%(HERDING["thrusters_per_drone"],HERDING["thruster_d_m"])),
+            ("Sonar","%.0f m forward+side"%HERDING["sonar_range_m"]),("",""),
+            ("DETECTION + TARGETING",""),
+            ("Echo/omni sonar","%.0f m depth reach"%HERDING["detect_depth_m"]),
+            ("Hotspot forecast","%.0f%% satellite+AI"%HERDING["hotspot_pred_pct"]),
+            ("Trawl time","-%.0f%% vs blind tow"%HERDING["trawl_time_cut_pct"]),("",""),
+            ("HERDING STIMULI (the fence)",""),
+            ("Acoustic","%.0f-%.0f Hz near-field"%(HERDING["acoustic_lo_hz"],HERDING["acoustic_hi_hz"])),
+            ("LED bar","%.0f nm blue shadow cue"%HERDING["led_nm"]),
+            ("Bubble wall","micro-bubble curtain"),
+            ("E-field","%.1f V/m startle (no stun)"%HERDING["efield_v_per_m"]),
+            ("Formations","wall / funnel / arc / sweep"),("",""),
+            ("THE SMART NET",""),
+            ("Mouth","%.0f x %.0f m"%(HERD_NET["mouth_w_m"],HERD_NET["mouth_h_m"])),
+            ("Mesh","%.0f-%.0f mm AI-set"%(HERD_NET["mesh_min_mm"],HERD_NET["mesh_max_mm"])),
+            ("Excluders","TED + BRD (-%.0f%% bycatch)"%HERDING["bycatch_reduction_pct"]),
+            ("Purity","%.0f%% shrimp (grooves >25mm)"%HERD_NET["shrimp_purity_pct"]),
+            ("Tension","sensors auto-tune mesh"),
+            ("Cod end","%.0f t, sonar-triggered"%HERD_NET["cod_end_t"]),("",""),
+            ("CATCH MATH",""),
+            ("Fence -> mouth","%.0f:1 funnel"%herd_funnel_ratio()),
+            ("Concentration","%.0fx vs blind trawl"%HERDING["concentration_x"]),
+            ("Herd efficiency","%.0f%% delivered"%HERDING["herd_eff_pct"]),
+            ("Catch","%.0f t/set x %d sets"%(HERDING["catch_t_per_set"],HERDING["sets_per_day"])),
+            ("Per day","%.0f t (vs %.0f blind)"%(herd_catch_t_per_day(),HERDING["baseline_catch_t_per_set"]*HERDING["sets_per_day"])),
+            ("Per year","%.0f t own trawl"%herd_catch_t_per_year()),
+            ("Sweep rate","%.0f ha/h"%herd_sweep_area_ha_per_h()),
+            ("Farm power","%.0f kW (%.0f kWh/set)"%(herd_power_kw(),herd_energy_kwh_per_set())),
+            ("Share of recapture","%.1f%% (partners land rest)"%(herd_own_share_of_recapture()*100)),("",""),
+            ("FENCE PHYSICS (derived)",""),
+            ("Delivery chain","%.1f%% = engage x hold x funnel"%(herd_delivery_eff()*100)),
+            ("Located->landed","%.0f%% (detect x deliver x cod-end)"%(herd_located_to_landed_eff()*100)),
+            ("Fence coverage","%d needed vs %d deployed (%.1f m gaps)"%(
+                herd_drones_required(),HERDING["tethered_drones"],herd_fence_spacing_m())),
+            ("Stimulus reach","%.0f m radius x2 = gap-free"%herd_stimulus_reach_m()),
+            ("Endurance","+%.1f h margin after the set"%herd_endurance_margin_h()),
+            ("Tether","%.0f m needed, %.0f m on the drum"%(herd_tether_len_m(),HERDING["tether_len_m"])),
+            ("Set coverage","%.0f nm / %.1f km2 per set"%(herd_set_sweep_nm(),herd_area_swept_km2_per_set())),("",""),
+            ("OCEAN RANCH CYCLE",""),
+            ("Zones","%d x %.0f km, rotated"%(FARM_CYCLE["zones"],FARM_CYCLE["zone_len_km"])),
+            ("Target stock","DNA-barcoded P. monodon cohort only"),
+            ("Wild bycatch","white/brown/pink excluded by TED+BRD"),
+            ("Restock","%.0f t PL + %.0f t boosters/zone"%(FARM_CYCLE["restock_t_per_zone"],HERDING["booster_t_per_zone"])),
+            ("Take","%.0f%% standing biomass"%(FARM_CYCLE["sustainable_take_frac"]*100)),("",""),
+            ("RELEASE DESIGN (goal doc)",""),
+            ("PL20 mass","%.2f g -> %.1f%% to harvest"%(RELEASE["classes"][0][1],
+                                                      RELEASE["classes"][0][2]*100)),
+            ("Juvenile edge","%.1f g -> %.0f%% to harvest"%(RELEASE["classes"][1][1],
+                                                          RELEASE["classes"][1][2]*100)),
+            ("Window","spring-tide + rains, dusk"),
+            ("Nursery water","ambient flow-through + RAS"),
+            ("Brine tanks","28-30C, 30-35 ppt biofloc"),
+            ("Supplier PL","%.0f+ t/trip top-up"%RELEASE["supplier_t_per_trip"]),
+            ("Benchmark","wild 3-10%%, best 22%%"),
+            ("Marking","DNA barcode every batch"),("",""),
+            ("COMPLIANCE",""),
+            ("Regulator","NOAA / RFMO quota log"),
+            ("Bycatch","TED 55deg + BRD, -%.0f%%"%HERDING["bycatch_reduction_pct"]),
+            ("Licence","enhancement in owned zones"),
+            ("Audit","DNA -> recapture proof"),
+            ("Rest rule","%d yr fallow per zone"%FARM_CYCLE["rest_years_per_zone"]),("",""),
+            ("AI HERDING (live)",""),
+            ("Schools tracked","%d"%pt.ai_herd_schools_tracked),
+            ("Corridor","%s (live)"%self.farm_pattern),
+            ("Drones active","%d"%pt.ai_herd_drones_active),
+            ("Stage","%s %.0f%%"%(FARM_STAGES[self._farm_stage_i][0],self._farm_stage_frac*100)),
+            ("Policy","RL retrained per set; track acc %.0f%%"%pt.ai_herd_tracking_accuracy),
+            ("Learning","trip N+1 always herds better than trip N"),
+        ]
+        # panel is scrollable (wheel over the stats column): content is taller
+        # than the viewport on purpose -- every goal-doc block stays readable
+        content_h=sum(8 if lab=="" else (21 if val=="" else 19) for lab,val in rows)
+        self.farm_scroll=int(clamp(self.farm_scroll,0.0,max(0.0,content_h-(h-52))))
+        yy=y+42-self.farm_scroll
+        clip=self.screen.get_clip()
+        self.screen.set_clip(pygame.Rect(x,y+36,w,h-40))
+        for lab,val in rows:
+            if lab=="": yy+=8; continue
+            if val=="":
+                self.screen.blit(self.fs.render(lab,True,C_ACCENT),(x+12,yy)); yy+=21
+                continue
+            self.screen.blit(self.fs.render(lab,True,C_TEXT_DIM),(x+12,yy))
+            col=(C_DRONE_HI if "drone" in val or "umbilical" in val or "PTFE" in val else
+                 (C_CHUTE if "min" in val and ("Drop" in lab or "Recharge" in lab or "Recovery" in lab) else
+                 (C_PING if "Hz" in val or "nm" in val or "V/m" in val or "bubble" in val or "wall" in val else
+                 (C_SCHOOL if "funnel" in val or "%" in val and ("eff" in lab.lower() or "Share" in lab or "Take" in lab) else
+                 (C_GOOD if "t/day" in val or "t own" in val or "ha/h" in val or "sets" in val else
+                 (C_AI if "tracked" in lab or "preds" in lab or "active" in lab or "learned" in lab else C_TEXT))))))
+            self.screen.blit(self.fs.render(val,True,col),(x+150,yy)); yy+=19
+        self.screen.set_clip(clip)
+        if content_h>h-52:
+            self.screen.blit(self.fmicro.render("wheel over this panel scrolls",
+                True,C_TEXT_DIM),(x+12,y+h-18))
+
     def draw_part_list(self):
         r=self.rend(); w=self.LEFT_PANEL_W-16; x=8; y=self.TOP_BAR_H+4
         h=self.H-self.TOP_BAR_H-self.BOTTOM_BAR_H-220
@@ -7647,7 +11448,8 @@ class App:
 
     def draw_scale_bar(self,rect):
         r=self.rend()
-        disp=ENG_DISP if self.mode=="engine" else (HATCH_DISP if self.mode=="hatchery" else SHIP_DISP)
+        disp=(ENG_DISP if self.mode=="engine" else (HATCH_DISP if self.mode=="hatchery"
+              else (FARM_DISP if self.mode=="farm" else SHIP_DISP)))
         target_px=120
         metres_per_px=1.0/(disp*min(rect.w,rect.h)*1.12/r.dist)
         target_m=target_px*metres_per_px
@@ -7732,6 +11534,8 @@ class App:
             ("Release chutes","%d, continuous trickle, DNA barcoded"%DIMS["release_chutes"]),
             ("DNA barcoding lab","%.0f m2 CRISPR-Cas9"%DIMS["dna_lab_m2"]),
             ("Autonomy","SAE Level 5, %d crew supervisory only"%SHIP["crew"]),
+            ("Drone herding reel","%d fish dogs, %.0f/min drop, %.0f:1 funnel"%(
+                herd_drones_total(),HERDING["drop_per_min"],herd_funnel_ratio())),
             ("Partner fleet","%s vessels at $%.2f/kg"%(
                 f"{PARTNER_FLEET_DETAIL['total_vessels']:,}",
                 PARTNER_FLEET_DETAIL["partner_fee_per_kg"]))]
@@ -7741,6 +11545,147 @@ class App:
             self.screen.blit(self.fmicro.render(name,True,C_TEXT),(x+42,yy))
             self.screen.blit(self.fmicro.render(detail,True,C_TEXT_DIM),(x+270,yy)); yy+=15
         self._preview_hitboxes["checklist_close"]=pygame.Rect(0,0,self.W,self.H)
+
+    def _dash_arrow(self,p0,p1,kw,col):
+        """Marching-dash energy edge (SE.py fuelchain): width ~ sqrt(kW)."""
+        w=max(2,min(16,int(kw**0.5/24.0)))
+        x0,y0=p0; x1,y1=p1
+        dx=x1-x0; dy=y1-y0; ln=math.hypot(dx,dy) or 1.0
+        ux,uy=dx/ln,dy/ln
+        t=pygame.time.get_ticks()*0.001; off=(t*46.0)%22.0
+        seg=12.0; gap=10.0; s=off-22.0
+        pygame.draw.line(self.screen,_mix(col,(0,0,0),0.55),p0,p1,w+3)
+        while s<ln-8:
+            a=max(0.0,s); b=min(ln-8,s+seg)
+            if b>a:
+                pygame.draw.line(self.screen,col,
+                    (x0+ux*a,y0+uy*a),(x0+ux*b,y0+uy*b),w)
+            s+=seg+gap
+        hx,hy=x0+ux*(ln-6),y0+uy*(ln-6)
+        pygame.draw.polygon(self.screen,col,[(hx,hy),
+            (hx-ux*10-uy*5,hy-uy*10+ux*5),(hx-ux*10+uy*5,hy-uy*10-ux*5)])
+
+    def _dial(self,x,y,r,frac,col,label,value):
+        """Arc gauge (Radiant.py-style ring) for SOC-style fractions."""
+        pygame.draw.circle(self.screen,C_PANEL_HI,(x,y),r,3)
+        a0=math.pi*0.75; a1=a0+math.pi*1.5*clamp(frac,0.0,1.0)
+        pts=[(x+r*math.cos(a),y+r*math.sin(a))
+             for a in np.linspace(a0,a1,24)]
+        if len(pts)>1: pygame.draw.lines(self.screen,col,False,pts,4)
+        self.screen.blit(self.fs.render(value,True,col),
+                         (x-self.fs.size(value)[0]/2,y-8))
+        self.screen.blit(self.fmicro.render(label,True,C_TEXT_DIM),
+                         (x-self.fmicro.size(label)[0]/2,y+r-2))
+
+    def draw_energy(self):
+        """ENERGY tab -- the SE.py free-fuel chain, live from the powertrain.
+        HARVEST -> STORE -> SPLIT -> BURN -> DRIVE; every watt accounted."""
+        pt=self.pt; f=pt.flow; rect=self.view_rect()
+        srcs=[("Deck solar",f.get("solar",0.0),C_SUN),
+              ("Raft solar",f.get("float_solar",0.0),C_SUN),
+              ("Heave oars",f.get("heave",0.0),C_GOOD),
+              ("Drop weights",f.get("weights",0.0),C_GOOD),
+              ("Tunnel turbines",f.get("tunnel",0.0),C_H2),
+              ("Wind rotors",f.get("rotor",0.0),C_ACCENT),
+              ("Sun lens",f.get("sunlens",0.0),C_SUN),
+              ("OTEC",f.get("otec",0.0),C_H2),
+              ("Digester",f.get("digester",0.0),C_RANCH_RELEASE),
+              ("Sails",f.get("sail",0.0),C_TEXT_DIM),
+              ("Regen boost",f.get("regenboost",0.0),C_GOOD),
+              ("TEG film",f.get("teg",0.0),C_STEAM),
+              ("Kite",f.get("kite",0.0),C_ACCENT)]
+        harvest=sum(v for _,v,_ in srcs)
+        loads=[("Propulsion",f.get("prop",0.0),C_ACCENT),
+               ("Farm spread",f.get("farm",0.0),C_DRONE_HI)]
+        drive=sum(v for _,v,_ in loads)
+        burn=f.get("genset",0.0)+f.get("steam",0.0); split=f.get("electro",0.0)
+        # header
+        self.screen.blit(self.fb.render(
+            "FREE-FUEL CHAIN -- sun + sea -> thrust",True,C_ACCENT),(24,46))
+        self.screen.blit(self.fs.render(
+            "Renewables feed the prop bus first. Surplus fills the battery, then makes hydrogen. "
+            "The H2 genset only ever charges -- it never burns to move.",
+            True,C_TEXT_DIM),(24,70))
+        self.screen.blit(self.fs.render(
+            "DEMO DRIVER: fixed sunny sea (sun 0.85, sea 0.25) x4 speed -- voyage tab runs the real weather",
+            True,C_TEXT_DIM),(24,86))
+        # ---- chain cards ---------------------------------------------------
+        cy=110; ch=190; cw=(rect.w-48-4*18)/5.0
+        cards=[("1  HARVEST","kW gathered now","%.0f kW"%harvest,C_SUN,
+                [(n,v,c) for n,v,c in srcs if v>0.5][:7] or [("(all sources idle)",0.0,C_TEXT_DIM)]),
+               ("2  STORE","battery + supercap + flywheel","%.0f%% SOC"%(pt.soc*100),C_GOOD,
+                [("Battery","%.0f MWh"%(pt.soc*pt.batt_kwh/1000.0),C_GOOD),
+                 ("Supercap","%.1f / %.1f MWh"%(pt.cap_kwh/1000.0,pt.cap_max/1000.0),C_GOOD),
+                 ("Flywheel","%.1f kWh"%pt.fly_kwh(),C_ACCENT),
+                 ("H2 buffer","%.0f kg"%pt.h2_kg,C_H2),
+                 ("Mode",pt.mode,C_TEXT_DIM)]),
+               ("3  SPLIT","electrolysis of seawater","%.0f kW"%split,C_H2,
+                [("H2 made","%.1f kg"%pt.h2_made,C_H2),
+                 ("Efficiency","%.0f%% LHV"%(FREE_FUEL["electrolyser_eff"]*100),C_TEXT_DIM),
+                 ("Runs when","SOC>%d%% + spare"%(ELECTRO_SOC_FLOOR*100),C_TEXT_DIM)]),
+               ("4  BURN","H2 genset (charge only)","%.0f kW"%burn,C_WARN,
+                [("Electric","%.0f kW"%f.get("genset",0.0),C_WARN),
+                 ("ORC + stage-2","%.0f kW"%f.get("steam",0.0),C_STEAM),
+                 ("Block / boiler","%.0f / %.0f C"%(pt.block_temp_c,pt.boiler_c),C_TEXT_DIM),
+                 ("PCM bank","%.0f C"%pt.pcm_c,C_TEXT_DIM),
+                 ("ORC fluid","%s %.0f%% life"%(pt.fluid,pt.fluid_life*100),C_TEXT_DIM),
+                 ("H2 burned","%.1f kg"%pt.h2_used,C_TEXT_DIM)]),
+               ("5  DRIVE","loads on the prop bus","%.0f kW"%drive,C_ACCENT,
+                [(n,"%.0f kW"%v,c) for n,v,c in loads])]
+        edges=[]
+        for i,(title,sub,big,col,rows) in enumerate(cards):
+            x=24+i*(cw+18)
+            panel(self.screen,x,cy,int(cw),ch,alpha=220)
+            pygame.draw.rect(self.screen,_mix(col,(0,0,0),0.2),(x,cy,int(cw),ch),1)
+            self.screen.blit(self.fs.render(title,True,col),(x+10,cy+8))
+            self.screen.blit(self.fmicro.render(sub,True,C_TEXT_DIM),(x+10,cy+24))
+            self.screen.blit(self.fb.render(big,True,col),(x+10,cy+42))
+            ry=cy+76
+            for row in rows:
+                n,v,c=row if len(row)==3 else (row[0],row[1],C_TEXT_DIM)
+                self.screen.blit(self.fmicro.render(str(n),True,C_TEXT_DIM),(x+10,ry))
+                img=self.fmicro.render(str(v),True,c)
+                self.screen.blit(img,(x+cw-10-img.get_width(),ry))
+                ry+=15
+            if i<4: edges.append((x+cw+2,x+cw+16,cy+ch//2))
+        for ex0,ex1,ey in edges:
+            # edge flow = the smaller card's output side value (approximate)
+            self._dash_arrow((ex0,ey),(ex1,ey),max(harvest,drive,200.0),C_ACCENT)
+        # ---- storage dials + live counters ---------------------------------
+        py=cy+ch+18
+        panel(self.screen,24,py,rect.w-48,150,alpha=215)
+        self.screen.blit(self.fs.render("STORAGE + $0-FUEL PROOF",True,C_ACCENT),
+                         (40,py+8))
+        self._dial(150,py+88,40,pt.soc,C_GOOD,"BATTERY","%.0f%%"%(pt.soc*100))
+        self._dial(300,py+88,40,clamp(pt.fly_kwh()/80.0,0.0,1.0),C_ACCENT,"FLYWHEEL",
+                   "%.1f kWh"%pt.fly_kwh())
+        self._dial(450,py+88,40,pt.h2_kg/max(1.0,pt.h2_max),C_H2,"H2 STORE",
+                   "%.0f%%"%(100*pt.h2_kg/max(1.0,pt.h2_max)))
+        self._dial(600,py+88,40,
+                   clamp(herd_power_kw()*0.0+f.get("farm",0.0)/max(1.0,herd_power_kw()),0,1),
+                   C_DRONE_HI,"FARM LOAD","%.0f kW"%f.get("farm",0.0))
+        # counters: energy made vs the diesel it replaced (audited counter)
+        stats=[("SOLAR GATHERED","%.1f MWh"%(pt.solar_kwh/1000.0),C_SUN),
+               ("HARVEST ADD-ONS","%.1f MWh"%(pt.harvest_kwh/1000.0),C_GOOD),
+               ("PROP BUS USED","%.1f MWh"%(pt.prop_kwh/1000.0),C_ACCENT),
+               ("H2 MADE / USED","%.0f / %.0f kg"%(pt.h2_made,pt.h2_used),C_H2),
+               ("GENSET-OFF TIME","%.0f%%"%(100.0*pt.engine_off_ticks/max(1,pt.total_ticks)),C_GOOD),
+               ("DIESEL $ NOT BURNED","$%.2fM"%(pt.diesel_saved_usd/1e6),C_ACCENT),
+               ("TEG RECOVERED","%.1f MWh"%(pt.teg_kwh/1000.0),C_STEAM),
+               ("BUS I2R LOSS","%.1f kWh"%pt.bus_loss_kwh,C_WARN),
+               ("SOC WINDOW","%.0f-%.0f%% (predict)"%(pt.genset_on_soc*100,
+                                                      pt.soc_target*100),C_H2)]
+        sx=700; sw=(rect.w-48-700+24)/3.0
+        for i,(lab,val,col) in enumerate(stats):
+            x=sx+(i%3)*sw; y=py+34+(i//3)*36
+            self.screen.blit(self.fmicro.render(lab,True,C_TEXT_DIM),(x,y))
+            self.screen.blit(self.fs.render(val,True,col),(x,y+14))
+        # bottom note
+        self.screen.blit(self.fmicro.render(
+            "Honesty note: H2 is a battery, not a fuel source -- the sun and sea are. "
+            "Round trip %.0f%%; the genset exists for night, storms and the farm rush."%(
+                FREE_FUEL["round_trip_eff"]*100),
+            True,C_TEXT_DIM),(40,py+138))
 
     def draw_cruise(self):
         rect=self.view_rect(); v=self.voyage; pt=self.pt
@@ -7756,8 +11701,27 @@ class App:
         r.el=0.14+bob; r.dist=2.35; r.pan=np.array([0.0,-rect.h*0.06])
         r.view,r.section="full",False
         ship_rect=pygame.Rect(rect.x,horizon-int(rect.h*0.30),rect.w,int(rect.h*0.55))
-        r.render(self.screen,ship_rect,self.ang,firing_glow=None,mouse_pos=None,
-            show_labels=False,label_font=None,interactive=False,injection=None,heat=0.0)
+        if self._lowq:
+            # same adaptive path as the preview tabs: 2/3 scale + every
+            # second frame while fps is low (backdrop has no interactivity)
+            self._cruise_phase=(getattr(self,"_cruise_phase",0)+1)&1
+            cs=getattr(self,"_cruise_surf",None)
+            if (self._cruise_phase or cs is None or
+                    cs.get_size()!=(ship_rect.w,ship_rect.h)):
+                w2,h2=max(2,int(ship_rect.w*0.66)),max(2,int(ship_rect.h*0.66))
+                sub=pygame.Surface((w2,h2),pygame.SRCALPHA)
+                r.render(sub,pygame.Rect(0,0,w2,h2),self.ang,firing_glow=None,
+                    mouse_pos=None,show_labels=False,label_font=None,
+                    interactive=False,injection=None,heat=0.0)
+                if cs is None or cs.get_size()!=(ship_rect.w,ship_rect.h):
+                    cs=self._cruise_surf=pygame.Surface(
+                        (ship_rect.w,ship_rect.h),pygame.SRCALPHA)
+                else: cs.fill((0,0,0,0))
+                cs.blit(pygame.transform.smoothscale(sub,(ship_rect.w,ship_rect.h)),(0,0))
+            self.screen.blit(cs,ship_rect.topleft)
+        else:
+            r.render(self.screen,ship_rect,self.ang,firing_glow=None,mouse_pos=None,
+                show_labels=False,label_font=None,interactive=False,injection=None,heat=0.0)
         r.az,r.el,r.dist,r.pan,r.view,r.section=stash
         # mode-specific visual effects
         if pt.is_harvesting and pt.trawl_deploy_frac>0.1:
@@ -7801,7 +11765,7 @@ class App:
         for i in range(26):
             y=horizon+8+i*7
             if y>rect.bottom-2: break
-            amp=3+i*0.7; phase=tt*(0.6+i*0.03)
+            phase=tt*(0.6+i*0.03)
             x0=rect.x+int((math.sin(phase)*0.5+0.5)*rect.w); wlen=26+i*3
             pygame.draw.line(self.screen,_mix(C_SEA1,col,0.35),
                 (max(rect.x,x0-wlen),y),(min(rect.right,x0+wlen),y),1)
@@ -7838,7 +11802,6 @@ class App:
         """Draw flowing current particles when in drift mode."""
         tt=pygame.time.get_ticks()/1000.0
         speed=pt.drift_current_kn
-        col=(100,200,255,80)
         rng=np.random.RandomState(42)
         for i in range(18):
             phase=(tt*speed*0.15+i*0.37)%1.0
@@ -7871,7 +11834,7 @@ class App:
         for i in range(8):
             y=horizon+10+i*12
             if y>rect.bottom-2: break
-            amp=8+i*2; phase=tt*(0.8+i*0.05)
+            phase=tt*(0.8+i*0.05)
             x0=rect.x+int((math.sin(phase)*0.5+0.5)*rect.w); wlen=40+i*8
             pygame.draw.line(self.screen,_mix(C_SEA1,(255,255,255),0.15),
                 (max(rect.x,x0-wlen),y),(min(rect.right,x0+wlen),y),2)
@@ -7995,6 +11958,7 @@ class App:
             ("OTEC 24/7",pt.flow.get("otec",0),C_H2),("Digester",pt.flow.get("digester",0),(180,220,100)),
             ("Float solar",pt.flow.get("float_solar",0),(255,200,80)),
             ("Electrolyser",-pt.flow["electro"],C_H2),("Propulsion",-pt.flow["prop"],C_ACCENT),
+            ("Farm spread",-pt.flow.get("farm",0.0),C_DRONE_HI),
             ("Battery net",pt.flow["batt"],C_GOOD if pt.flow["batt"]>=0 else C_BAD)]
         for lab,val,col in flows:
             self.screen.blit(self.fs.render(lab,True,C_TEXT_DIM),(x+14,yy))
@@ -8238,7 +12202,7 @@ class App:
     def draw_innov(self):
         rect=self.view_rect(); pt=self.pt
         pygame.draw.rect(self.screen,C_PANEL,rect)
-        self.screen.blit(self.fbig.render("14 INNOVATION UPGRADES",True,C_ACCENT),(rect.x+20,rect.y+8))
+        self.screen.blit(self.fbig.render("16 INNOVATION UPGRADES",True,C_ACCENT),(rect.x+20,rect.y+8))
         self.screen.blit(self.fs.render("Cost reduction + efficiency optimization  |  TAB to cycle",True,C_TEXT_DIM),(rect.x+20,rect.y+42))
         # ---- Layout: 3 columns ----
         col_w=(rect.w-60)//3
@@ -8253,7 +12217,10 @@ class App:
             ("1. OTEC","3 MW 24/7 baseload","%.0f kWh"%(pt.otec_kwh),C_H2),
             ("2. Perovskite","35%% eff (was 26%%)","%.0f kW"%(pt.flow.get("solar",0)),C_SUN),
             ("3. Air Lube","12%% drag cut","+34%% total drag",(100,200,255)),
+            ("4. ORC Recovery","%s loop, wear-tracked"%pt.fluid,"%.0f kW"%pt.flow.get("steam",0),C_STEAM),
+            ("5. TEG Film","block dT -> DC bus","%.0f kW"%pt.flow.get("teg",0),C_WARN),
             ("6. Digester","800 kW biogas","%.0f kWh"%(pt.digester_kwh),(180,220,100)),
+            ("7. Predictive ECU","daylight SOC window","%.0f-%.0f%%"%(pt.genset_on_soc*100,pt.soc_target*100),C_AI),
             ("13. Float Solar","+21 MW drift","%s"%( "ON" if pt.floating_solar_deployed else "OFF"),C_SUN),
         ]
         for name,desc,val,col in energy_items:
@@ -8271,6 +12238,8 @@ class App:
             ("Float Solar",pt.flow.get("float_solar",0),(255,200,80)),
             ("Heave",pt.flow.get("heave",0),C_GOOD),
             ("Rotor",pt.flow.get("rotor",0),(150,200,255)),
+            ("TEG",pt.flow.get("teg",0),C_WARN),
+            ("ORC",pt.flow.get("steam",0),C_STEAM),
         ]
         max_kw=max([s[1] for s in sources]+[1])
         bar_w=pw-80
@@ -8365,6 +12334,7 @@ class App:
             ("11. Continuous Release","Trickle vs batch (+5%% surv)","%s"%( "ON" if pt.continuous_release_active else "OFF"),C_SHRIMP),
             ("14. AUV Fleet","8 drones, 24h, 500m depth","%d / %d deployed"%(pt.auv_deployed,pt.auv_count),(100,220,200)),
             ("15. Swarm AI","12-vessel coordination","%d decisions"%pt.swarm_decisions,C_AI),
+            ("17. Drone Herding","48 fish dogs + drop reel -> 5x catch","%.0f t/day"%herd_catch_t_per_day(),C_DRONE_HI),
         ]
         for name,desc,val,col in ops_items:
             self.screen.blit(self.fs.render(name,True,col),(col3_x+12,yy))
@@ -8792,7 +12762,7 @@ class App:
             self.screen.blit(self.fs.render(ln,True,C_TEXT),(dx+12,yy)); yy+=18
 
     def draw_company(self):
-        rect=self.view_rect(); pt=self.pt
+        rect=self.view_rect()
         pygame.draw.rect(self.screen,C_PANEL,rect)
         self.screen.blit(self.fbig.render("COMPANY & BUSINESS OPERATIONS",True,C_ACCENT),(rect.x+20,rect.y+12))
         self.screen.blit(self.fs.render("Ocean Abundance Corporation -- scroll: up/down arrows",True,C_TEXT_DIM),(rect.x+20,rect.y+48))
@@ -9280,24 +13250,34 @@ class App:
         self.quota_scroll=max(0,min(self.quota_scroll,max_scroll))
 
     def draw_help(self):
-        w,h=560,400; x=(self.W-w)//2; y=(self.H-h)//2
+        w,h=660,560; x=(self.W-w)//2; y=(self.H-h)//2
         panel(self.screen,x,y,w,h,alpha=240)
         self.screen.blit(self.fb.render("CONTROLS",True,C_ACCENT),(x+20,y+16))
-        lines=["TAB            cycle SHIP / ENGINE / HATCHERY / CRUISE / MAP / OPS / INNOV / COMPANY / QUOTA",
+        lines=["TAB            cycle SHIP / ENGINE / HATCHERY / FARM / ENERGY /",
+            "               CRUISE / MAP / OPS / INNOV / COMPANY / QUOTA / SPEC",
             "or click       mode tabs in the top bar",
             "mouse drag     orbit the model","right-drag     pan     wheel  zoom",
             "click part     pin it in the inspector (left sidebar)",
             "1 2 3 4        full / exploded / assembly / section-cut",
             "E              quick exploded toggle","X              cross-section half-cut toggle",
             "L              toggle part labels","R              reset the camera",
+            "S              SOLO view -- isolate pinned/hovered part",
+            "UP / DOWN      step part selection (in SOLO: step the part)",
             "[  ]           step the assembly build","A / C          assemble all / clear",
+            "B              blueprint overlay (dims + BOM balloons)",
+            "K              auto-rotate turntable   - / =  view speed",
+            "P              pause model animation",
+            "FARM tab       click WALL/FUNNEL/ARC/SWEEP to rebuild the corridor;",
+            "               drag the TESTBENCH sliders to retune the spread",
             ",  .           slow / speed up TIME-WARP (CRUISE)",
             "F1 F2 F3 F4    vessel mode: DRIFT / HARVEST / TRANSIT / STORM",
+            "ENERGY tab     live free-fuel chain: harvest->store->split->burn->drive",
+            "SPEC tab       manufacturing sheet -- UP/DOWN pick, ENTER/D page",
             "V              verification checklist overlay",
             "I              full informational specification",
             "H              this help     ESC / Q  quit     F11  fullscreen"]
         for i,ln in enumerate(lines):
-            self.screen.blit(self.font.render(ln,True,C_TEXT),(x+24,y+52+i*22))
+            self.screen.blit(self.font.render(ln,True,C_TEXT),(x+24,y+52+i*21))
 
     def draw_info(self):
         w,h=760,self.H-90; x=(self.W-w)//2; y=50
@@ -9322,6 +13302,8 @@ class App:
         sys.stdout.flush()
         while self.running:
             dt=self.clock.tick(60)/1000.0; dt=min(dt,0.05)
+            self.fps=self.fps*0.9+self.clock.get_fps()*0.1
+            self._lowq=self.fps<26.0
             self.handle_events(dt); self.update(dt); self.draw()
         pygame.quit()
 
@@ -9426,7 +13408,6 @@ class FleetSimulation:
             else: vessels=12; ramp=1.0
 
             # AI improvement: genetic gain accumulates, survival improves slightly
-            gen_gain=year*0.25  # 0.25% per year
             self.ai_generations+=4  # 4 generations per year
             self.ai_genetic_gain_pct+=0.25
 
@@ -9436,7 +13417,6 @@ class FleetSimulation:
             year_revenue=year_product*1000.0*price+ancillary*vessels*ramp
             year_opex=opex_fleet_usd(vessels=vessels,harvest_t=year_harvest,
                                      revenue_usd=year_revenue)
-            year_capex=capex_total_usd()*(1.0/self.years) if year<=self.years else 0.0
             year_ebitda=year_revenue-year_opex
             dep=FINANCE["vessel_cost_usd"]*0.9/25.0*vessels
             year_ebit=year_ebitda-dep
@@ -9680,6 +13660,63 @@ def print_report():
                                              bunker_feed_cost_usd_per_year()/1e6))
     print("   Feed self-sufficiency: %.0f%%"%(feed_self_sufficiency_frac()*100))
 
+    _rule("DRONE SHRIMP HERDING (the fish-dog spread)")
+    print("   Multi-thread reel    %d drums x %d lines = %d tethered drones + %d AUVs"%(
+        HERDING["reel_drums"],HERDING["lines_per_drum"],
+        HERDING["tethered_drones"],HERDING["free_auvs"]))
+    print("   Drop design          %d-slot rotary magazine -> %d PTFE chutes @ %.0f deg"%(
+        HERDING["magazine_slots"],HERDING["drop_chutes"],HERDING["chute_angle_deg"]))
+    print("                        %.0f/min drop, %.0f/min recover -> full spread out %.0f min, home %.0f min"%(
+        HERDING["drop_per_min"],HERDING["recover_per_min"],
+        herd_deploy_min(),herd_recover_min()))
+    print("                        splash-damp cones + freshwater desal rinse + %.0f min inductive charge"%(
+        HERDING["charge_min"]))
+    print("   Fish dog             %.2f m torpedo, %.0f kg, %.0f kn, %.0f h, rated %.0f m, %d thrusters"%(
+        HERDING["drone_len_m"],HERDING["drone_mass_kg"],HERDING["drone_speed_kn"],
+        HERDING["drone_endurance_h"],HERDING["drone_depth_m"],HERDING["thrusters_per_drone"]))
+    print("   Senses               %s (%.0f Hz tracking)"%(HERDING["sensor_suite"],
+        HERDING["target_tracking_hz"]))
+    print("   Herding AI           %s -- learning %s"%(
+        HERDING["ai_model"],"on" if HERDING["herd_learning"] else "off"))
+    print("   Stimulus fence       %.0f-%.0f Hz acoustic + %.0f nm LED + bubble curtain + %.1f V/m"%(
+        HERDING["acoustic_lo_hz"],HERDING["acoustic_hi_hz"],
+        HERDING["led_nm"],HERDING["efield_v_per_m"]))
+    print("   AI corridors         wall / funnel / arc / sweep, picked per school shape")
+    print("   Funnel               %.0f m fence -> %.0f m mouth (%.0f:1), %.0f%% delivery"%(
+        HERDING["spread_m"],HERDING["net_mouth_m"],herd_funnel_ratio(),HERDING["herd_eff_pct"]))
+    print("   Sweep rate           %.0f ha/h at %.1f kn advance"%(
+        herd_sweep_area_ha_per_h(),HERDING["sweep_speed_kn"]))
+    print("   Smart trawl          %s, %.0f mm mesh (AI-set %.0f-%.0f), TED %s + BRD %s"%(
+        HERD_NET["type"].split(",")[0],HERD_NET["mesh_mm"],
+        HERD_NET["mesh_min_mm"],HERD_NET["mesh_max_mm"],
+        "ON" if HERD_NET["ted"] else "off","ON" if HERD_NET["brd"] else "off"))
+    print("   Catch                %.0f t/set x %d sets/day = %.0f t/day, %.0f t/yr own trawl"%(
+        HERDING["catch_t_per_set"],HERDING["sets_per_day"],
+        herd_catch_t_per_day(),herd_catch_t_per_year()))
+    print("   vs blind trawl       %.0fx concentration, -%.0f%% bycatch"%(
+        HERDING["concentration_x"],HERDING["bycatch_reduction_pct"]))
+    print("   Ranch cycle          %d zones x %.0f km, take %.0f%% of standing biomass, rest %.0f yr/zone"%(
+        FARM_CYCLE["zones"],FARM_CYCLE["zone_len_km"],
+        FARM_CYCLE["sustainable_take_frac"]*100,FARM_CYCLE["rest_years_per_zone"]))
+    print("   Nutrient boosters    %.0f t/zone/yr -> %.0fx local carrying capacity"%(
+        HERDING["booster_t_per_zone"],HERDING["carrying_cap_boost_x"]))
+    print("   Farm power draw      %.0f kW during a set (%.0f kW survey drift), %.0f kWh/set -- all surplus solar"%(
+        herd_power_kw(),herd_survey_power_kw(),herd_energy_kwh_per_set()))
+
+    _rule("FREE-FUEL ENERGY CHAIN (SE.py architecture)")
+    print("   Prop bus first       renewables drive the propellers directly; surplus -> battery -> H2")
+    print("   Solar deck           %.1f MWp fixed + %.1f MWp towed rafts, %.0f%% at STC"%(
+        SOLAR_PEAK_KW/1000.0,FLOATING_SOLAR["additional_peak_kw"]/1000.0,
+        SOLAR_ARRAY["eff"]*100))
+    print("   Harvest add-ons      OTEC %.1f MW, digester %.0f kW, heave/weights/tunnel wave watts"%(
+        OTEC["rated_kw"]/1000.0,DIGESTER["biogas_kw"]))
+    print("   Hydrogen             %.0f%% electrolyser, %.0f kg store -> genset charges only (never burns to move)"%(
+        FREE_FUEL["electrolyser_eff"]*100,DIMS["h2_capacity_kg"]))
+    print("   Round trip           %.0f%% solar->H2->thrust; H2 is a battery, not a fuel source"%(
+        FREE_FUEL["round_trip_eff"]*100))
+    print("   Fuel cost            $0.00/t -- diesel equivalent $%.0f/t never leaves the harbour"%(
+        FREE_FUEL["diesel_equivalent_usd_per_t"]))
+
     _rule("FLEET OUTPUT (%d vessels)"%FINANCE["fleet_target"])
     print("   Live-weight harvest   %14s t/yr   %s lb"%(
         format(fleet_harvest_t_per_year(),",.0f"),
@@ -9756,7 +13793,10 @@ def _print_banner():
     print("="*78)
     print(" Leviathan.py  --  TIGER LEVIATHAN-CLASS DIGITAL TWIN")
     print("="*78)
-    print(" Modes (TAB):  SHIP | ENGINE | HATCHERY | CRUISE | MAP | OPS | INNOV | COMPANY | QUOTA")
+    print(" Modes (TAB):  SHIP | ENGINE | HATCHERY | FARM | ENERGY | CRUISE | MAP |")
+    print("               OPS | INNOV | COMPANY | QUOTA | SPEC")
+    print("               FARM = drone shrimp herding (click corridors, drag testbench)")
+    print("               ENERGY = live free-fuel chain   SPEC = manufacturing sheet")
     print(" Vessel:       %.0f m semi-submersible, %d pontoons + %d columns"%(
         SHIP["loa_m"],HULL_FORM["pontoons"],
         HULL_FORM["pontoons"]*HULL_FORM["columns_per_pontoon"]))
@@ -9788,6 +13828,8 @@ def _print_banner():
         bunker_feed_cost_usd_per_year()/1e6))
     print(" Recapture:    CRISPR-Cas9 DNA barcoding, %.0f%% target rate"%(
         OCEAN["recapture_frac"]*100))
+    print(" Herding:      %d fish-dog drones via drop reel -> %.0f%% delivery, %.0f t/day"%(
+        herd_drones_total(),HERDING["herd_eff_pct"],herd_catch_t_per_day()))
     print(" AI:           SAE Level 5 autonomy, %d crew supervisory only"%SHIP["crew"])
     print(" Finance:      $%.1fB CAPEX -> $%.2fB/yr revenue, $%.2fB EBITDA"%(
         FINANCE["investment_usd"]/1e9,FINANCE["fleet_revenue_per_year_usd"]/1e9,

@@ -14,7 +14,7 @@ This repository contains:
 
 | File | Description |
 |---|---|
-| `Leviathan.py` | 9,700+ line Python/pygame digital twin with 9 interactive modes + 20-year simulation engine |
+| `Leviathan.py` | 13,700+ line Python/pygame digital twin with 12 interactive modes + 20-year simulation engine |
 | `EngineeringSchematics.md` | Detailed engineering specifications for every vessel subsystem |
 | `OperationLaunchPlan.md` | Vessel operational modes, crew procedures, launch timeline |
 | `BuildingGuide.md` | Construction guide for the vessel and shore infrastructure |
@@ -39,8 +39,17 @@ python Leviathan.py --verify     # physical-limit audit (headless)
 
 | Key | Action |
 |---|---|
-| `TAB` | Cycle modes: SHIP / ENGINE / HATCHERY / CRUISE / MAP / OPS / INNOV / COMPANY / QUOTA |
+| `TAB` | Cycle modes: SHIP / ENGINE / HATCHERY / FARM / ENERGY / CRUISE / MAP / OPS / INNOV / COMPANY / QUOTA / SPEC |
 | `F1-F4` | Vessel modes (in CRUISE): DRIFT / HARVEST / TRANSIT / STORM |
+| `B` | Blueprint view toggle (3D tabs: SHIP, ENGINE, HATCHERY, FARM) |
+| `P` | Pause animation (3D tabs) |
+| `K` | Auto-rotate toggle (3D tabs) |
+| `S` | Solo-view the hovered/selected part (3D tabs) |
+| `Up/Down` | Step through parts (3D tabs) / scroll (SPEC, COMPANY, QUOTA) |
+| `1` / `2` / `3` / `4` | Full / exploded / assembly / cross-section view (3D tabs) |
+| `R` | Reset camera |
+| `F` | Cycle ORC working fluid (ENGINE bench) |
+| `Mouse drag` | FARM testbench sliders (herding spread tuning) |
 | `Mouse drag` | Orbit camera |
 | `Wheel` | Zoom |
 | `Right-drag` | Pan |
@@ -74,18 +83,46 @@ python Leviathan.py --verify     # physical-limit audit (headless)
 2. **Rear**: Eggs hatch into nauplii (92% survival), grow to PL20 stage (80% survival), then to 7.5g juveniles (85% survival) -- all in onboard RAS tanks. Overall egg-to-juvenile survival: 62.6%
 3. **Release**: 1.32 trillion PL20 + 370M juveniles per vessel per year (15.9 trillion fleet-wide) are released into optimal seasonal nursery grounds across 18 nations' EEZs, guided by GPS and timed to tidal cycles. Continuous trickle release prevents predator learning
 4. **Grow**: Juveniles grow naturally in the wild ocean for 6 months, reaching 300g harvest size. Acoustic conditioning and pheromone lures train them to return. 6% PL20 ocean survival, 18% juvenile survival
-5. **Harvest**: At 65% recapture rate (boosted from 35% baseline via acoustic + pheromone conditioning), the fleet + 1,200 AI super-trawlers + 3,500 partner vessels harvest 186 million tonnes per year (410 billion lbs)
+5. **Harvest**: A 48-drone tethered "fish dog" spread herds each school into a TED/BRD smart trawl (95.6% derived delivery to the net mouth), while the fleet + 1,200 AI super-trawlers + 3,500 partner vessels land the rest -- 186 million tonnes per year at 65% recapture (410 billion lbs)
 6. **Process**: 40+ processing mega-plants produce 115 million tonnes of finished product (IQF, block frozen, value-added) with full DNA traceability
 7. **Distribute**: 80 distribution centers deliver to food service, retail, industrial, pharmaceutical, and pet food customers globally
 
 ### Why It Works
 
-- **Zero fuel cost**: Solar (37 MW peak, bifacial PERC) + H2 engine (20 MW, self-fuelling from seawater electrolysis) + OTEC (3 MW 24/7) + Flettner rotors + heave-oars = $0/kW
+- **Zero fuel cost**: Solar (37 MW peak, perovskite-on-silicon tandem @ 35%) + H2 engine (20 MW, self-fuelling from seawater electrolysis) + OTEC (3 MW 24/7) + Flettner rotors + heave-oars = $0/kW
 - **Zero feed cost**: Microalgae photobioreactors (photosynthesis) + Black Soldier Fly larvae (waste-to-protein) + biofloc (bacteria eat shrimp waste) + yeast (protein from air+water) = $0/kg feed
 - **Zero disease risk**: Ocean ranching means no net-pen density, no antibiotic use, no water quality crises
 - **Storm-proof by design**: Semi-submersible pentamaran hull with 30-minute ballast-down to survive Category 5 hurricanes with <10 degree roll. Five submerged pontoons and twenty slender columns give a waterplane just 12% of a monohull's -- the platform barely interacts with wave energy
 - **Mobile**: Fleet follows optimal temperatures year-round, rotating across 18 EEZ zones
-- **Carbon-negative**: Algae captures CO2, IMTA seaweed absorbs nitrogen/phosphorus, zero fossil fuel = net -0.5 kg CO2 per kg shrimp
+- **Carbon-negative**: Algae (1,154 t/yr) + IMTA seaweed (480 t/yr) sequester CO2, zero fossil fuel = net **-0.003 kg CO2 per kg shrimp** (model-derived); ~48,000 t/yr avoided vs diesel
+
+---
+
+## The Drone "Fish Dog" Herding Spread (FARM Tab)
+
+Instead of towing an open trawl and hoping, the vessel drops a **fence of underwater drones that herd the released school into the net mouth** -- sheepdogs working a flock underwater.
+
+**Multi-thread reel**: 6 drums x 8 grooves = **48 tethered drones** dropped at 12/min through 4 chutes (40 deg, 1.8 s drop, <0.3 m splash). A 64-drone carousel magazine holds 16 spares; umbilical winch-in recovers at 15/min with a 45 min recharge + desalination rinse that kills biofilm on the rack.
+
+**Each drone**: 0.9 m x 0.28 m, 14 kg, 4 kn, 12 h endurance, 120 m depth. Three ducted thrusters, imaging sonar (80 m) + stereo camera + eDNA + DVL + CTD + hydrophone, fibre/electrical umbilical (280 m) plus acoustic backup, and a 22 TOPS edge module running an RL swarm-herding policy retrained fleet-wide after every set.
+
+**The stimuli fence**: acoustic projectors (20-100 Hz), 470 nm blue LEDs, bubble curtains and a 0.5 V/m mild e-field -- amplitude auto-tuned to school density and mood. Four formations: **wall** (push straight ahead), **funnel** (V converging on the mouth), **arc** (close behind, then walk), **sweep** (rotating bottom sweep). The 400 m spread concentrates the school **5x** into a **16 m** smart-trawl mouth -- up to 10 nautical miles swept per 4-hour set.
+
+**The smart trawl**: four-panel otter trawl with AI-variable mesh (22-40 mm), 55 deg turtle excluder + bycatch-reduction device, headrope sonar, cod-end camera and tension sensors. Groove excluders pass fish >25 mm for **90% shrimp purity**; the set closes when the cod-end estimate hits **40 t**.
+
+**Derived, not asserted** -- the `--verify` audit checks the physics:
+
+| Metric | Value |
+|---|---|
+| Delivery to net mouth | 95.6% (engage x hold x funnel) |
+| Located-to-landed | 84% end-to-end |
+| Drones needed vs deployed | 23 (9 m stimulus reach) vs 48 -- gap-free at 8.3 m spacing |
+| Battery margin | 4.1 h set vs 12 h endurance = +7.9 h |
+| Tether reach | 263 m required vs 280 m reel |
+| Set energy | 613 kW/set = 14.7 MWh/day -- inside the 266 MWh/day solar budget |
+| Catch | 40 t/set vs 8 t baseline (+400%) = 240 t/day |
+
+**Ranch cycle** (3 rotating zones, ~80 x 20 km): RELEASE (45d, spring, nutrient boosters) -> GROW (90d, summer, AUV + eDNA census) -> HERD+HARVEST (60d, autumn, adults only) -> REST+ROTATE (170d + 2 fallow years). Sustainable take capped at 25% of standing biomass; every released cohort is DNA-barcoded at the chute -- only barcoded shrimp are kept, wild penaeids escape through the TED/BRD.
 
 ---
 
@@ -95,13 +132,12 @@ python Leviathan.py --verify     # physical-limit audit (headless)
 
 | Stream | % of Revenue | Detail |
 |---|---|---|
-| Shrimp sales (wholesale) | 82% | IQF + block frozen, $7.00/kg ($3.18/lb blended avg) |
-| Byproducts (chitin, astaxanthin, oil) | 5% | Chitin $50/kg, astaxanthin $2,000/kg |
-| Technology licensing | 4% | Leviathan-class design + AI systems to partners |
-| Carbon credits | 3% | 500K t CO2/yr per vessel @ $100/t |
-| IMTA (seaweed) | 2% | 1,200 t/yr per vessel, $15M/vessel |
-| Data sales | 2% | Oceanographic + fisheries data to governments/research |
-| Value-added products | 2% | Cooked, peeled, breaded, paste, powder, ready-meals |
+| Shrimp sales (wholesale) | 94.3% | IQF + cooked + block + value-added, $7.00/kg blended |
+| Byproducts (chitin, astaxanthin, oil) | 5.7% | 6% of shrimp value: chitin $50/kg, astaxanthin $2,000/kg |
+| Technology licensing | <1% | Leviathan-class design + AI, $10M/vessel/yr |
+| Carbon credits | <1% | 48,000 t CO2/yr avoided per vessel @ $100/t = $4.96M |
+| IMTA (seaweed) | <1% | 1,200 t/yr @ $800/t = $0.96M/vessel |
+| Data sales | <1% | Oceanographic + fisheries data, $2M/vessel/yr |
 
 ### Financial Projections (Steady-State, Full Fleet)
 
@@ -121,15 +157,28 @@ python Leviathan.py --verify     # physical-limit audit (headless)
 - **Steady-state EBITDA**: $509B/year (59% margin)
 - **20-year cumulative profit**: $8.5T (zero-failure simulation)
 
+### From Net to Consumer (model-derived chain)
+
+15.5M t landed per vessel -> 62% processing yield -> 115.4M t product at unbroken -18C -> $7.00/kg blended -> **$856B fleet revenue, $509B EBITDA**
+
+| Stage | Network | Spec |
+|---|---|---|
+| Harvest | Own drone-fenced trawl + 1,200 AI trawlers + 3,500 partner vessels ($0.30/kg fee, 65/35 share) | 97% bycatch escape |
+| Processing | 40 plants (Tier1 150 t/day -> Tier3 87 t/day) | HACCP/BRC/IFS, IQF -35C in 4h |
+| Cold chain | 80 centres: 5 mega-hubs (2K t/day) + 75 regional | -18C +/-2C, 99.99% integrity |
+| Product mix | IQF 16/20-31/40 (80%), cooked (10%), block+value-added (10%) | $3.50-$12.00/kg |
+| Customers | Food service 45% / retail 30% / industrial 15% / pharma 5% / feed 3% / pet 2% | $5-$50/kg |
+| Donation | 29 port stops across 25 nations (18 EEZ + 4 seasonal + 7 dist hubs), 8 NGO partners | 5% free = 51.1B meals = 75.9M people |
+
 ### Competitive Advantages
 
 - **Zero fuel cost** vs 15-20% OPEX for competitors
 - **Zero feed cost** vs 40-50% OPEX for competitors
-- **18-nation EEZ exclusivity** = legal monopoly in release zones
+- **18-nation EEZ exclusivity** = legal monopoly in release zones -- $895M in licence fees buys exclusive ranching rights across 31.8M km2 and 90 release zones (10-25 yr terms, 5-8% royalty = ~$55.7B/yr blended)
 - **DNA traceability** from broodstock to plate
 - **AI-driven selective breeding** (15% genetic gain per generation)
 - **Carbon-negative production** (eligible for carbon credits)
-- **100% global market share** at full scale = pricing power
+- **~100% global market share** at full scale = pricing power (model: 100.3% — output exceeds the reference market)
 
 ---
 
@@ -159,7 +208,7 @@ At full scale, the fleet produces **186 million tonnes** of raw shrimp annually:
 - 5% of all processed product donated free at every port stop = **5.77 million tonnes/year**
 - **51.1 billion** 4oz meals delivered free to food banks, schools, and NGOs
 - Complete annual protein for **76 million people** (50g protein/day)
-- 29 port stops across 25 nations, 8 partner NGOs (WFP, FAO, Save the Children, etc.)
+- 29 port stops across 25 nations, 8 partner NGOs (WFP, FAO, Save the Children, Action Against Hunger, Oxfam, Red Cross/Red Crescent, GAIN, local NGOs)
 - Revenue foregone: **$40.4B/year** (donated at $0 vs $7.00/kg wholesale)
 - Cost to OAC: **$7.5B/year** (processing + cold chain only)
 
@@ -181,7 +230,7 @@ At full scale, the fleet produces **186 million tonnes** of raw shrimp annually:
 - **Zero land** use (ocean-based, no coastal ponds, no mangrove destruction)
 - **Zero wild fish** in feed (100% algae + BSF + biofloc)
 - **Zero antibiotics** (probiotic + biofloc approach)
-- **Carbon-negative**: -0.5 kg CO2 per kg shrimp (algae sequestration + zero fossil fuel)
+- **Carbon-negative**: -0.003 kg CO2 per kg shrimp (model-derived: algae sequestration + zero fossil fuel)
 - **97% bycatch escape** ratio (AI-assisted sorting)
 - **<80% MSY** sustainability threshold per zone
 
@@ -203,11 +252,13 @@ Every docking port stop offloads a portion of harvest **for FREE** to the host c
 - **51.1 billion 4oz (113g) meals** per year
 - **Protein for 76 million people** (50g protein/day each)
 - **1.38 billion kg protein/year** delivered free
-- **29 port stops** across **25 nations** (18 EEZ + 4 seasonal hubs + 7 distribution hubs)
+- **29 port stops** across **25 nations** -- 18 EEZ ports + 4 seasonal hubs + 7 distribution hubs = **282 port calls/year**
 
-**Per port stop:**
-- EEZ ports: 12 stops/year each, ~29K t per offload
-- Hub ports: 6 stops/year each, ~42K t per offload
+**Per stop** (model-derived):
+- 18 EEZ ports (Jakarta, HCMC, Guayaquil, Mumbai, Manila, Bangkok, Recife, Mazatlan, Lima, Lagos, Chittagong, Darwin, Antananarivo, Dakar, Yangon, Colombo, Dar es Salaam, Cartagena): **245,489 t/yr each**, 12 stops/yr, 2.17B meals, 3.23M people fed
+- 4 seasonal hubs (Singapore, Yokohama, Fremantle, Capetown): **122,745 t/yr each**, 6 stops/yr
+- 7 distribution hubs (LA, Rotterdam, Dubai, Shanghai, Tokyo, New York, Sao Paulo): **122,745 t/yr each**, 6 stops/yr
+- Every offload = **~20,457 t**, 4-hour port-side handoff to NGO trucks -> community kitchens + food banks within 24 h
 - 4-hour port-side handoff, cold chain -18C maintained
 
 **Partner organizations (8):**
@@ -251,16 +302,20 @@ The ocean ranching model is inherently scalable:
 |---|---|
 | Length overall | 260 m |
 | Beam | 90 m |
-| Depth | 50 m |
-| Displacement | 130,667 t (operating) / 153,851 t (survival) |
-| Hull type | Semi-submersible pentamaran (5 hulls, 20 columns) |
+| Depth (keel to deck) | 57 m |
+| Draft | 24 m operating / 34 m storm (+23,185 t storm ballast) |
+| Displacement | 130,667 t operating / 105,163 t transit / 153,851 t storm |
+| Hull type | Semi-submersible pentamaran (5 hulls, 20 columns), waterplane ~10% of monohull |
+| Stability | GM 2.48 m operating / 5.66 m storm; heave 21.3 s, roll 40.1 s |
 | Crew | 75 (supervisory, AI operates all systems) |
 | Broodstock females | 200,000 |
-| Energy | Solar (37 MW peak) + H2 engine (20 MW) + OTEC (3 MW 24/7) + rotors + heave-oars |
-| Battery | 180 MWh marine LFP (structural) |
+| Drone herding | 48 tethered drones (6-drum reel) + 8 AUVs + 4-drop-chute magazine (64) |
+| Smart trawl | 16 m mouth, AI-variable mesh, TED+BRD, 40 t cod-end, 90% purity |
+| Energy | Solar (37 MW peak perovskite) + H2 engine (20 MW) + OTEC (3 MW 24/7) + rafts (+21 MW drift) + rotors + heave-oars |
+| Battery | 180 MWh marine LFP (structural) + 3 MWh supercapacitor |
 | Fuel cost | $0 (sunlight + seawater to hydrogen) |
 | Feed cost | $0 (algae + BSF + biofloc + yeast) |
-| Storm survival | Category 5 (30-min ballast, <10 deg roll, GM 5.66m) |
+| Storm survival | Category 5 (30-min ballast, 3.7 deg roll in 18 m seas, GM 5.66m) |
 | Cost per vessel | $750M (hull + RAS fit-out) |
 
 ---
@@ -323,21 +378,26 @@ The simulation models 160 stress events across 20 years, all resolved by onboard
 ## Technology Stack
 
 - **Language**: Python 3
-- **Graphics**: pygame (real-time 3D wireframe rendering)
+- **Graphics**: pygame (real-time 3D rendering, numpy-vectorized cull/shade/depth pipeline, dynamic-resolution fallback)
 - **Numerics**: numpy
-- **Architecture**: Single-file digital twin (9,700+ lines) with modular data structures, 20-year fleet simulation, animated hatchery pipeline
+- **Architecture**: Single-file digital twin (13,700+ lines) with modular data structures, 12 interactive tabs, 20-year fleet simulation, animated hatchery + drone-herding pipelines, manufacturing-spec sheet (MFG_SPEC), 16-row physical-limit audit
+
+### Interactive Modes (12)
+
+`SHIP` / `ENGINE` / `HATCHERY` / `FARM` / `ENERGY` / `CRUISE` / `MAP` / `OPS` / `INNOV` / `COMPANY` / `QUOTA` / `SPEC`
 
 ### Data Structures in Leviathan.py
 
-The file contains 50+ major data dictionaries covering every aspect of the operation:
+The file contains 60+ major data dictionaries covering every aspect of the operation:
 
-- **Engineering**: SHIP, DIMS, HULL_COAT, SUPERHYDROPHOBIC, AIR_LUBE
-- **Energy**: SOLAR, H2, OTEC, ELECTROLYSER, THERM, FREE_FUEL
-- **Biology**: SHRIMP, ALGAE_FARM, BSF, DIGESTER, IMTA, RECAPTURE, ACOUSTIC_RECAPTURE
-- **Operations**: HARVEST_PLAN, SUPPLY_CHAIN, QUOTA_SYSTEM, EEZ_LICENSES, PROCESSING_PLANTS, DISTRIBUTION_NETWORK, PARTNER_FLEET_DETAIL, DONATION_PROGRAM
-- **Business**: COMPANY, FINANCE, FINANCIAL_MODEL, MARKET_ANALYSIS, TAX_PLANNING, DEPRECIATION_SCHEDULE, BREAK_EVEN_ANALYSIS, SENSITIVITY_ANALYSIS, WORKING_CAPITAL, KPI_DASHBOARD
+- **Engineering**: SHIP, DIMS, HULL_COAT, SUPERHYDROPHOBIC, AIR_LUBE, LOAD_CONDITIONS, MFG_SPEC
+- **Energy**: SOLAR_ARRAY, PEROVSKITE, H2, OTEC, ELEC, THERM, FLOATING_SOLAR, DIGESTER, FREE_FUEL
+- **Drone herding (FARM)**: HERDING, HERD_NET, HERD_CHAIN, HERD_GATES, FARM_CYCLE, FARM_PATTERNS, RELEASE, AUV_FLEET
+- **Biology**: SHRIMP, OCEAN, CAPACITY, ALGAE_FARM, BSF, YEAST_PROTEIN, BIOFLOC, IMTA, RECAPTURE, ACOUSTIC_RECAPTURE
+- **Operations**: HARVEST, DRIFT, TRANSIT, STORM_MODE, CONTINUOUS_RELEASE, VESSEL_MODES, HARVEST_PLAN, SUPPLY_CHAIN, QUOTA_SYSTEM, EEZ_LICENSES, PROCESSING_PLANTS, DISTRIBUTION_NETWORK, PARTNER_FLEET, DONATION_PROGRAM
+- **Business**: COMPANY, FINANCE, FINANCIAL_MODEL, CAPEX_MODEL, MARKET_ANALYSIS, TAX_PLANNING, DEPRECIATION_SCHEDULE, BREAK_EVEN_ANALYSIS, SENSITIVITY_ANALYSIS, WORKING_CAPITAL, KPI_DASHBOARD
 - **Compliance**: REGULATORY, RISK_MGMT, HR_SYSTEM, ESG_REPORTING, QUALITY_ASSURANCE, CRISIS_MANAGEMENT, RFMO_FRAMEWORK, ITQ_SYSTEM
-- **Innovation**: PATENT_PORTFOLIO, CUSTOMER_SEGMENTS, AI_SYSTEMS, CREDUCTION
+- **Innovation**: PATENT_PORTFOLIO, CUSTOMER_SEGMENTS, AI_SYSTEMS, CREDUCTION, KITE_SAIL (rejected)
 
 ---
 
